@@ -1,0 +1,5 @@
+# One plugin owns the Cursor provider route and the host-only account RPC.
+# It leaves DSH's model and persistent web configuration untouched.
+- insert:
+    - id: cursor-subscription
+      name: 'dsh-cursor-subscription'
