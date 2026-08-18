@@ -31,6 +31,7 @@ import {
 	CursorUsageReader,
 	parseEndStream,
 	classifyCursorError,
+	encodeMcpResult,
 	encodeSetBlobResult,
 	CREDENTIAL_REF,
 	getTokenExpiry,
@@ -473,6 +474,20 @@ test("parseEndStream extracts the real Cursor error and classifies quota exhaust
 	// A non-error end-stream payload is a clean stop.
 	assert.equal(parseEndStream(Buffer.from("{}")), undefined);
 	assert.equal(parseEndStream(Buffer.from("not json")), undefined);
+});
+
+test("encodeMcpResult encodes text and is_error for bridge continuation", () => {
+	const result = new Reader(encodeMcpResult({ content: "tool output", isError: true }));
+	assert.deepEqual(result.tag(), { field: 1, wireType: 2 });
+	const success = new Reader(result.bytes());
+	assert.deepEqual(success.tag(), { field: 1, wireType: 2 });
+	const item = new Reader(success.bytes());
+	assert.deepEqual(item.tag(), { field: 1, wireType: 2 });
+	const text = new Reader(item.bytes());
+	assert.deepEqual(text.tag(), { field: 1, wireType: 2 });
+	assert.equal(text.string(), "tool output");
+	assert.deepEqual(success.tag(), { field: 2, wireType: 0 });
+	assert.equal(success.varint(), 1);
 });
 
 test("encodeSetBlobResult acks a server blob write", () => {

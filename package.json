@@ -1,6 +1,6 @@
 {
   "name": "dsh-cursor-subscription",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "packageManager": "pnpm@11.19.0",
   "description": "Cursor subscription for DeepSeek Harness with browser login, token refresh, model discovery, and the Cursor Agent chat protocol",
   "type": "module",
