@@ -1,41 +1,38 @@
 # DSH Cursor Subscription
 
-在 DeepSeek Harness 中直接登录 Cursor 账户并使用 Cursor 订阅，不需要 API Key，
-也不依赖 Cursor IDE 或 Cursor CLI。保留 DSH 原有的会话、工具和权限体系：
-登录后在模型选择器中即可选择 Cursor 订阅模型，Agent 的工具调用走 DSH 本地的
-工具集。
+**English** | [简体中文](README_zh.md)
 
-> ⚠️ 本插件接入的是 Cursor 未公开的 Agent 协议（`agent.v1.AgentService/Run`），
-> 属于社区逆向工程成果，可能随 Cursor 服务端变化而失效。本项目与 Anysphere /
-> Cursor 无隶属或背书关系，请遵守 Cursor 的服务条款。
+Sign in to your Cursor account and use your Cursor subscription directly from DeepSeek Harness—without an API key and without depending on the Cursor IDE or Cursor CLI. The plugin preserves DSH's existing session, tool, and permission systems: once signed in, you can select Cursor subscription models from the model picker, while agent tool calls are executed through DSH's local toolset.
 
-## 能做什么
+> ⚠️ This plugin integrates with Cursor's unpublished Agent protocol (`agent.v1.AgentService/Run`). It is a community reverse-engineering project and may stop working when Cursor changes its server-side implementation. This project is not affiliated with or endorsed by Anysphere or Cursor. Please comply with Cursor's terms of service.
 
-- 在 DSH 中直接使用 Cursor 订阅（浏览器 PKCE 登录，无 API Key）；
-- 登录凭据保存在本机 DSH credential 存储中，自动刷新访问令牌；
-- 通过 Cursor 的 `GetUsableModels` 动态发现当前账户可用的模型（失败时回退到内置列表）；
-- 流式对话，支持思考过程（reasoning）与 DSH 工具调用；
-- 设置页可查看登录状态与令牌有效期；
-- 设置页可查询订阅用量（包含请求、计划使用百分比、按需消费、账单周期）并手动刷新；
-- 设置页可查看当前账户可用的模型列表并手动刷新。
+## Features
 
-## 工作原理
+- Use a Cursor subscription directly in DSH through browser-based PKCE sign-in—no API key required.
+- Store credentials in DSH's local credential store and refresh access tokens automatically.
+- Discover models available to the current account dynamically through Cursor's `GetUsableModels`, with a built-in fallback list if discovery fails.
+- Stream conversations with reasoning output and DSH tool calls.
+- View sign-in status and token expiration in the settings page.
+- View and manually refresh subscription usage, including requests, plan usage percentage, on-demand spend, and billing cycle.
+- View and manually refresh the models available to the current account.
 
-| 环节 | 实现 |
+## How It Works
+
+| Stage | Implementation |
 | --- | --- |
-| 登录 | PKCE：打开 `cursor.com/loginDeepControl`，轮询 `api2.cursor.sh/auth/poll` |
-| 刷新 | `POST api2.cursor.sh/auth/exchange_user_api_key`（Bearer refresh token） |
-| 模型发现 | `POST /agent.v1.AgentService/GetUsableModels`（raw protobuf） |
-| 对话 | `POST /agent.v1.AgentService/Run`（HTTP/2 + Connect 帧 + protobuf） |
-| 用量 | `GET cursor.com/api/usage`、`/api/usage-summary`、`POST /api/dashboard/teams`（会话 cookie） |
+| Sign-in | PKCE: open `cursor.com/loginDeepControl` and poll `api2.cursor.sh/auth/poll` |
+| Token refresh | `POST api2.cursor.sh/auth/exchange_user_api_key` with the refresh token as a Bearer token |
+| Model discovery | `POST /agent.v1.AgentService/GetUsableModels` using raw protobuf |
+| Chat | `POST /agent.v1.AgentService/Run` using HTTP/2, Connect frames, and protobuf |
+| Usage | `GET cursor.com/api/usage`, `GET /api/usage-summary`, and `POST /api/dashboard/teams` using the session cookie |
 
-## 安装
+## Installation
 
-### 交给 Agent（推荐）
+### Install with an Agent (Recommended)
 
-把 `AGENTS.md` 的链接发给 Agent 即可完成安装、更新、卸载与验收。
+Send the agent a link to [AGENTS.md](AGENTS.md). It contains the instructions for installation, updates, removal, and verification.
 
-### 手动安装（已有 dsh 命令）
+### Manual Installation with the `dsh` Command
 
 ```sh
 dsh plugin --profile web add dsh-cursor-subscription
@@ -43,52 +40,47 @@ dsh plugin --profile web list dsh-cursor-subscription --depth 0
 dsh --profile web --dump-config
 ```
 
-安装列表中应只有一个 `dsh-cursor-subscription`，配置中应只有一个
-`cursor-subscription` 条目。
+The installed package list should contain exactly one `dsh-cursor-subscription`, and the composed configuration should contain exactly one `cursor-subscription` entry.
 
-### 本地开发安装
+### Local Development Installation
 
-在 profile 目录（如 `%USERPROFILE%\.dsh\profiles\web`）执行：
+Run the following command in the profile directory, such as `%USERPROFILE%\.dsh\profiles\web`:
 
 ```sh
 pnpm add file:D:/mcp/dsh-cursor-subscription
 ```
 
-并把 `dsh-cursor-subscription` 加入 `package.json` 的
-`dsh.profile.bundles` 列表，然后重启 DSH。
+Then add `dsh-cursor-subscription` to the `dsh.profile.bundles` array in `package.json` and restart DSH.
 
-## 登录与使用
+## Sign-in and Usage
 
-1. 打开 DSH 的 **设置 -> Cursor 订阅**；
-2. 点击「浏览器登录」，浏览器会打开 Cursor 登录页；
-3. 登录并授权后，设置页自动显示「已登录」；
-4. 在模型选择器中选择 Cursor 模型（如 `composer-2`、`claude-4-sonnet`）。
+1. Open **Settings -> Cursor Subscription** in DSH.
+2. Select **Browser Sign-in**. Your browser will open the Cursor sign-in page.
+3. Complete sign-in and authorization. The settings page will automatically show that you are signed in.
+4. Select a Cursor model from the model picker, such as `composer-2` or `claude-4-sonnet`.
 
-需要调用工具时，Agent 会把 Cursor 侧的工具请求转成 DSH 本地工具执行，结果通过
-对话历史回传给模型，全程不经过 Cursor 的文件系统工具。
+When a tool is required, the agent converts Cursor's tool request into a local DSH tool execution. The result is returned to the model through the conversation history; Cursor's filesystem tools are not used.
 
-## 更新与卸载
+## Updating and Removing
 
 ```sh
-dsh plugin --profile web update dsh-cursor-subscription   # 更新
-dsh plugin --profile web remove dsh-cursor-subscription   # 卸载
+dsh plugin --profile web update dsh-cursor-subscription   # Update
+dsh plugin --profile web remove dsh-cursor-subscription   # Remove
 ```
 
-如果 DSH 正在运行，安装或更新后请手动重启。
+If DSH is running, restart it manually after installation or an update.
 
-## 常见问题
+## Troubleshooting
 
-- **登录后仍提示未登录**：确认浏览器完成了整个授权流程（登录页跳转回完成页）；
-  轮询最长等待约 2.5 分钟。
-- **模型列表为空**：`GetUsableModels` 依赖账户类型，失败时插件会使用内置模型列表，
-  仍可手动输入模型名。
-- **请求报 401**：令牌过期且 refresh token 失效时，需要在设置页重新登录。
-- **服务端协议变更**：Cursor 的 Agent 协议是未公开接口，若请求失败请检查插件更新。
+- **DSH still reports that you are signed out after sign-in:** Make sure the browser completed the entire authorization flow and redirected to the completion page. Polling waits for up to approximately 2.5 minutes.
+- **The model list is empty:** `GetUsableModels` depends on the account type. If discovery fails, the plugin uses its built-in model list, and you can still enter a model name manually.
+- **Requests return 401:** If the access token has expired and the refresh token is no longer valid, sign in again from the settings page.
+- **The server protocol changed:** Cursor's Agent protocol is unpublished. If requests fail, check for a plugin update.
 
-## 边界与支持
+## Scope and Support
 
-- 本插件不提供 Cursor 额度/用量查询（未公开对应接口）；
-- 图片生成、联网搜索等 Cursor 内置能力不在本插件范围内；
-- 问题反馈请在仓库 Issues 中提交。
+- The plugin does not provide Cursor quota or usage lookup because the corresponding interface is unpublished.
+- Cursor-native features such as image generation and web search are outside this plugin's scope.
+- Report problems through the repository's Issues page.
 
 [MIT](LICENSE)
