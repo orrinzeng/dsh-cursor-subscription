@@ -21,16 +21,6 @@
 - 设置页可查询订阅用量（包含请求、计划使用百分比、按需消费、账单周期）并手动刷新；
 - 设置页可查看当前账户可用的模型列表并手动刷新。
 
-## 工作原理
-
-| 环节 | 实现 |
-| --- | --- |
-| 登录 | PKCE：打开 `cursor.com/loginDeepControl`，轮询 `api2.cursor.sh/auth/poll` |
-| 刷新 | `POST api2.cursor.sh/auth/exchange_user_api_key`（Bearer refresh token） |
-| 模型发现 | `POST /agent.v1.AgentService/GetUsableModels`（raw protobuf） |
-| 对话 | `POST /agent.v1.AgentService/Run`（HTTP/2 + Connect 帧 + protobuf） |
-| 用量 | `GET cursor.com/api/usage`、`/api/usage-summary`、`POST /api/dashboard/teams`（会话 cookie） |
-
 ## 安装
 
 ### 交给 Agent（推荐）

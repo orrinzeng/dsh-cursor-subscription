@@ -16,16 +16,6 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - View and manually refresh subscription usage, including requests, plan usage percentage, on-demand spend, and billing cycle.
 - View and manually refresh the models available to the current account.
 
-## How It Works
-
-| Stage | Implementation |
-| --- | --- |
-| Sign-in | PKCE: open `cursor.com/loginDeepControl` and poll `api2.cursor.sh/auth/poll` |
-| Token refresh | `POST api2.cursor.sh/auth/exchange_user_api_key` with the refresh token as a Bearer token |
-| Model discovery | `POST /agent.v1.AgentService/GetUsableModels` using raw protobuf |
-| Chat | `POST /agent.v1.AgentService/Run` using HTTP/2, Connect frames, and protobuf |
-| Usage | `GET cursor.com/api/usage`, `GET /api/usage-summary`, and `POST /api/dashboard/teams` using the session cookie |
-
 ## Installation
 
 ### Install with an Agent (Recommended)
