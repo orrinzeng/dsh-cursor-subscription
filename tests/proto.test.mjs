@@ -30,6 +30,7 @@ import {
 	CursorCredentialStore,
 	CursorUsageReader,
 	parseEndStream,
+	parseTextToolCalls,
 	classifyCursorError,
 	encodeMcpResult,
 	encodeSetBlobResult,
@@ -287,6 +288,43 @@ test("decodeMcpArgs parses name, tool call id, and Value args", () => {
 	assert.equal(decodeValue(decoded.args["path"]), "/tmp/a.txt");
 	assert.equal(decodeValue(decoded.args["count"]), 3);
 	assert.equal(decodeValue(decoded.args["ok"]), true);
+});
+
+test("parseTextToolCalls recovers parameter-tag MCP calls", () => {
+	const tools = [{
+		name: "read",
+		parameters: {
+			type: "object",
+			properties: { file_path: { type: "string" }, limit: { type: "integer" } },
+		},
+	}];
+	const calls = parseTextToolCalls([
+		'<tool_call id="mcp_dsh-cursor-subscription_read">',
+		'<parameter name="file_path">D:\\\\work\\\\a.txt</parameter>',
+		'<parameter name="limit">100</parameter>',
+		'</tool_call>',
+	].join("\n"), tools);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].name, "read");
+	assert.match(calls[0].id, /^text-tool-/);
+	assert.deepEqual(JSON.parse(calls[0].arguments), { file_path: "D:\\\\work\\\\a.txt", limit: 100 });
+});
+
+test("parseTextToolCalls maps Cursor native aliases and attribute arguments", () => {
+	const tools = [
+		{ name: "read", parameters: { type: "object", properties: { file_path: { type: "string" }, limit: { type: "integer" } } } },
+		{ name: "glob", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } } } },
+		{ name: "pwsh", parameters: { type: "object", properties: { command: { type: "string" }, description: { type: "string" } } } },
+	];
+	const calls = parseTextToolCalls([
+		'<tool_call id="Read" path="D:\\\\work\\\\a.txt" limit="25"></tool_call>',
+		'<tool_call id="Glob" glob_pattern="*.gd" target_directory="D:\\\\work"></tool_call>',
+		'<tool_call id="Shell" command="Write-Output &quot;ok&quot;" description="test"></tool_call>',
+	].join("\n"), tools);
+	assert.deepEqual(calls.map((call) => call.name), ["read", "glob", "pwsh"]);
+	assert.deepEqual(JSON.parse(calls[0].arguments), { limit: 25, file_path: "D:\\\\work\\\\a.txt" });
+	assert.deepEqual(JSON.parse(calls[1].arguments), { pattern: "*.gd", path: "D:\\\\work" });
+	assert.deepEqual(JSON.parse(calls[2].arguments), { command: 'Write-Output "ok"', description: "test" });
 });
 
 test("decodeAgentServerMessage recognizes interaction updates", () => {
