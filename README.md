@@ -15,6 +15,7 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - View sign-in status and token expiration in the settings page.
 - View and manually refresh subscription usage, including requests, plan usage percentage, on-demand spend, and billing cycle.
 - View and manually refresh the models available to the current account.
+- Configure the per-run tool-round limit and HTTP retry count, interval, and status codes from the settings page.
 
 ## Installation
 
@@ -51,6 +52,8 @@ Then add `dsh-cursor-subscription` to the `dsh.profile.bundles` array in `packag
 
 When a tool is required, the agent converts Cursor's tool request into a local DSH tool execution. The result is returned to the model through the conversation history; Cursor's filesystem tools are not used.
 
+The **Runtime settings** card controls the maximum tool rounds in one Cursor run and the HTTP retry policy. Retry count means additional attempts and defaults to `0` (disabled). Cursor's streaming POST protocol cannot prove that a failed attempt was not processed remotely, so enabling retries may repeat model work or usage. Retries occur only before any response output when the initial HTTP status matches the configured list.
+
 ## Updating and Removing
 
 ```sh
@@ -69,7 +72,6 @@ If DSH is running, restart it manually after installation or an update.
 
 ## Scope and Support
 
-- The plugin does not provide Cursor quota or usage lookup because the corresponding interface is unpublished.
 - Cursor-native features such as image generation and web search are outside this plugin's scope.
 - Report problems through the repository's Issues page.
 

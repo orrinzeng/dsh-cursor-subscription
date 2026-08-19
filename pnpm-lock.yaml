@@ -44,6 +44,9 @@ importers:
       '@deepseek-ai/dsh-tools':
         specifier: 0.1.0-rc.6
         version: 0.1.0-rc.6(6854e0aa70974fab619e6006abab1e27)
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.1
+        version: 3.18.1
       react:
         specifier: ^18.2.0
         version: 18.3.1

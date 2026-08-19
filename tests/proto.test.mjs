@@ -7,6 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import http2 from "node:http2";
 
 import {
 	varintEncode,
@@ -42,6 +43,12 @@ import {
 	computeIncludedRequests,
 	parseUsageSummary,
 	parseRequestQuotaPerSeat,
+	resolveCursorSettings,
+	shouldRetryHttpStatus,
+	CursorAdapter,
+	createCursorRpcHandler,
+	AgentRun,
+	isSuccessfulAgentResponse,
 } from "../lib/index.js";
 
 test("varintEncode encodes small and large values", () => {
@@ -509,6 +516,7 @@ test("parseEndStream extracts the real Cursor error and classifies quota exhaust
 	assert.ok(end.message.includes("Your team has reached its usage limit"));
 	assert.ok(end.message.includes("return on 8/20/2026"));
 	assert.equal(classifyCursorError(`${end.code} ${end.debugCode} ${end.message}`), "RATE_LIMIT");
+	assert.equal(classifyCursorError("Cursor agent returned HTTP 408"), "TIMEOUT");
 	// A non-error end-stream payload is a clean stop.
 	assert.equal(parseEndStream(Buffer.from("{}")), undefined);
 	assert.equal(parseEndStream(Buffer.from("not json")), undefined);
@@ -531,4 +539,135 @@ test("encodeMcpResult encodes text and is_error for bridge continuation", () => 
 test("encodeSetBlobResult acks a server blob write", () => {
 	// KvClientMessage { id = 1 (varint 3), set_blob_result = 3 (empty message) }
 	assert.deepEqual([...encodeSetBlobResult(3)], [8, 3, 26, 0]);
+});
+
+test("AgentRun abort rejects a pending HTTP response wait immediately", async () => {
+	const server = http2.createServer();
+	server.on("stream", (stream) => stream.on("error", () => {}));
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		const address = server.address();
+		const run = new AgentRun("test-token", { baseUrl: `http://127.0.0.1:${address.port}` });
+		await run.start();
+		assert.equal(run.writeMessage(new Uint8Array([1])), true);
+		const waiting = run.waitForResponse(10_000);
+		const cancelled = new Error("test cancellation");
+		run.abort(cancelled);
+		await assert.rejects(waiting, /test cancellation/);
+	} finally {
+		await new Promise((resolve) => server.close(resolve));
+	}
+});
+
+test("Cursor Agent response requires HTTP 200 Connect protobuf", () => {
+	assert.equal(isSuccessfulAgentResponse(200, "application/connect+proto"), true);
+	assert.equal(isSuccessfulAgentResponse(200, "application/connect+proto; charset=binary"), true);
+	assert.equal(isSuccessfulAgentResponse(201, "application/connect+proto"), false);
+	assert.equal(isSuccessfulAgentResponse(204, "application/connect+proto"), false);
+	assert.equal(isSuccessfulAgentResponse(200, "application/json"), false);
+	assert.equal(isSuccessfulAgentResponse(200, undefined), false);
+});
+
+test("Cursor runtime settings validate retry and tool limits", () => {
+	const defaults = resolveCursorSettings();
+	assert.equal(defaults.maxToolRounds, 64);
+	assert.equal(defaults.retryCount, 0);
+	assert.equal(defaults.retryIntervalMs, 1000);
+	assert.deepEqual(defaults.retryHttpStatusCodes, [408, 425, 429, 500, 502, 503, 504]);
+	const custom = resolveCursorSettings({
+		maxToolRounds: 17,
+		retryCount: 3,
+		retryIntervalMs: 250,
+		retryHttpStatusCodes: [429, 503],
+	});
+	assert.equal(shouldRetryHttpStatus(503, 2, custom), true);
+	assert.equal(shouldRetryHttpStatus(503, 3, custom), false);
+	assert.equal(shouldRetryHttpStatus(500, 0, custom), false);
+	assert.throws(() => resolveCursorSettings({ retryHttpStatusCodes: [500, 500] }), /duplicates/);
+	assert.throws(() => resolveCursorSettings({ maxToolRounds: 0 }), /maxToolRounds/);
+	assert.throws(() => resolveCursorSettings({ retryCount: 11 }), /retryCount/);
+});
+
+test("Cursor adapter retries configured pre-output HTTP statuses", async () => {
+	const statuses = [503, 200];
+	const created = [];
+	const delays = [];
+	class FakeRun {
+		constructor(status) {
+			this.status = status;
+			this.responseContentType = "application/connect+proto";
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.frames = {
+				next: async () => this.frameTaken++ === 0
+					? { flags: CONNECT_END_STREAM_FLAG, payload: Buffer.from("{}") }
+					: undefined,
+			};
+			this.frameTaken = 0;
+		}
+		async start() {}
+		writeMessage() { return true; }
+		async waitForResponse() { return this.status; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings({ retryCount: 2, retryIntervalMs: 1234, retryHttpStatusCodes: [503] }),
+		createAgentRun: () => {
+			const run = new FakeRun(statuses[created.length]);
+			created.push(run);
+			return run;
+		},
+		sleep: async (ms) => delays.push(ms),
+	});
+	const chunks = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "retry-test",
+		messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+	})) chunks.push(chunk);
+	assert.equal(created.length, 2);
+	assert.deepEqual(delays, [1234]);
+	assert.equal(chunks.at(-1).type, "finish");
+	assert.deepEqual(chunks.at(-1).reason, { kind: "stop" });
+});
+
+test("Cursor settings RPC reads and updates only public runtime fields", async () => {
+	let current = resolveCursorSettings();
+	let revision = 4;
+	const handler = createCursorRpcHandler({}, {
+		settings: {
+			read: () => ({ ...current, revision }),
+			update: async (patch, expectedRevision) => {
+				assert.equal(expectedRevision, revision);
+				current = resolveCursorSettings({ ...current, ...patch });
+				revision++;
+				return { ...current, revision };
+			},
+		},
+	});
+	const signal = new AbortController().signal;
+	const read = await handler("settings", {}, signal);
+	assert.equal(read.ok, true);
+	assert.equal(read.value.maxToolRounds, 64);
+	assert.equal(read.value.revision, 4);
+	const updated = await handler("settings/update", {
+		revision: 4,
+		maxToolRounds: 25,
+		retryCount: 1,
+		retryIntervalMs: 10,
+		retryHttpStatusCodes: [429, 503],
+		accessToken: "must-not-pass-through",
+	}, signal);
+	assert.equal(updated.ok, true);
+	assert.deepEqual(updated.value, {
+		maxToolRounds: 25,
+		retryCount: 1,
+		retryIntervalMs: 10,
+		retryHttpStatusCodes: [429, 503],
+		revision: 5,
+	});
 });
