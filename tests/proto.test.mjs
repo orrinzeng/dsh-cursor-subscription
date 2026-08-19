@@ -635,6 +635,61 @@ test("Cursor adapter retries configured pre-output HTTP statuses", async () => {
 	assert.deepEqual(chunks.at(-1).reason, { kind: "stop" });
 });
 
+test("Cursor adapter stalls when the server only sends heartbeats", async () => {
+	// AgentServerMessage { interaction_update = 1 } -> InteractionUpdate { heartbeat = 13 }
+	const heartbeatAgentFrame = new Writer()
+		.message(1, new Writer().message(13, new Uint8Array(0)).finish())
+		.finish();
+	let failed;
+	let run;
+	const frames = {
+		next: async () => {
+			if (failed !== undefined) throw failed;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			return { flags: 0, payload: heartbeatAgentFrame };
+		},
+		fail: (error) => {
+			failed = error;
+		},
+		ended: false,
+		finish: () => {},
+	};
+	class StalledRun {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+		}
+		async start() {}
+		writeMessage() { return true; }
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort(error) { this.frames.fail(error); this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	run = new StalledRun();
+	run.frames = frames;
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => run,
+		progressTimeoutMs: 80,
+		idleCheckIntervalMs: 25,
+	});
+	const chunks = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "stall-test",
+		messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+	})) chunks.push(chunk);
+	const finish = chunks.at(-1);
+	assert.equal(finish.type, "finish");
+	assert.equal(finish.reason.kind, "error");
+	assert.equal(finish.reason.failure.code, "TIMEOUT");
+	assert.match(finish.reason.failure.message, /progress timeout/);
+});
+
 test("Cursor settings RPC reads and updates only public runtime fields", async () => {
 	let current = resolveCursorSettings();
 	let revision = 4;
