@@ -42,6 +42,7 @@ import {
 	getRequestCountFromSpendCents,
 	computeIncludedRequests,
 	parseUsageSummary,
+	parseModelAggregations,
 	parseRequestQuotaPerSeat,
 	resolveCursorSettings,
 	shouldRetryHttpStatus,
@@ -429,7 +430,7 @@ test("parseUsageSummary projects plan, spend, and billing cycle", () => {
 		billingCycleStart: "2026-07-20T05:59:33.000Z",
 		billingCycleEnd: "2026-08-20T05:59:33.000Z",
 		individualUsage: {
-			plan: { used: 2000, limit: 2000, totalPercentUsed: 52.84, autoPercentUsed: 23.17 },
+			plan: { used: 2000, limit: 2000, totalPercentUsed: 52.84, autoPercentUsed: 23.17, apiPercentUsed: 100 },
 			onDemand: { used: 1273, limit: null, remaining: null },
 		},
 		teamUsage: { onDemand: { used: 8052, limit: 8000, remaining: 0 } },
@@ -439,8 +440,51 @@ test("parseUsageSummary projects plan, spend, and billing cycle", () => {
 	assert.equal(parsed.planUsedCents, 2000);
 	assert.equal(parsed.totalPercentUsed, 52.84);
 	assert.equal(parsed.autoPercentUsed, 23.17);
+	assert.equal(parsed.apiPercentUsed, 100);
 	assert.deepEqual(parsed.individualOnDemand, { usedDollars: 12.73 });
 	assert.deepEqual(parsed.teamOnDemand, { usedDollars: 80.52, limitDollars: 80, remainingDollars: 0 });
+});
+
+test("parseUsageSummary coerces string percents and falls back to the API usage message", () => {
+	const parsed = parseUsageSummary({
+		namedModelSelectedDisplayMessage: "You've used 100% of your included API usage",
+		individualUsage: { plan: { autoPercentUsed: "23.17" } },
+	});
+	assert.equal(parsed.autoPercentUsed, 23.17);
+	assert.equal(parsed.apiPercentUsed, 100);
+});
+
+test("parseUsageSummary omits apiPercentUsed when Cursor does not report it", () => {
+	const parsed = parseUsageSummary({
+		individualUsage: { plan: { autoPercentUsed: 10 } },
+	});
+	assert.equal(parsed.apiPercentUsed, undefined);
+});
+
+test("parseUsageSummary reads team plan percents when individual plan is absent", () => {
+	const parsed = parseUsageSummary({
+		teamUsage: { plan: { autoPercentUsed: 5, apiPercentUsed: "80" } },
+	});
+	assert.equal(parsed.autoPercentUsed, 5);
+	assert.equal(parsed.apiPercentUsed, 80);
+});
+
+test("parseModelAggregations sorts named models by spend and drops empty rows", () => {
+	const models = parseModelAggregations({
+		aggregations: [
+			{ modelIntent: "claude-4.6-opus-high", totalCents: 2826.24 },
+			{ modelIntent: "cursor-grok-4.6-high", totalCents: 17612.98 },
+			{ modelIntent: "composer-2", totalCents: 0 },
+			{ modelIntent: "  ", totalCents: 12 },
+		],
+		totalCostCents: 20439.22,
+	});
+	assert.deepEqual(models, [
+		{ id: "cursor-grok-4.6-high", spentDollars: 176.13, pct: 86.2 },
+		{ id: "claude-4.6-opus-high", spentDollars: 28.26, pct: 13.8 },
+	]);
+	assert.deepEqual(parseModelAggregations({ aggregations: [] }), []);
+	assert.deepEqual(parseModelAggregations({}), []);
 });
 
 test("parseRequestQuotaPerSeat finds the active team", () => {
@@ -458,19 +502,22 @@ test("CursorUsageReader builds the dashboard cookie and parses live responses", 
 	const seen = [];
 	const fetchImpl = async (url, init) => {
 		seen.push({ url: String(url), cookie: init?.headers?.cookie, method: init?.method ?? "GET" });
+		const href = String(url);
 		const body =
-			String(url).includes("/api/usage?user=")
+			href.includes("/api/usage?user=")
 				? { "gpt-4": { numRequests: 100, maxRequestUsage: 500 } }
-				: String(url).includes("/api/usage-summary")
+				: href.includes("/api/usage-summary")
 					? {
 							membershipType: "pro",
 							limitType: "individual",
 							isUnlimited: false,
 							billingCycleStart: "2026-07-20T00:00:00.000Z",
 							billingCycleEnd: "2026-08-20T00:00:00.000Z",
-							individualUsage: { plan: { used: 400, limit: 2000, totalPercentUsed: 20 }, onDemand: { used: 100, limit: null } },
+							individualUsage: { plan: { used: 400, limit: 2000, totalPercentUsed: 20, autoPercentUsed: 12, apiPercentUsed: 40 }, onDemand: { used: 100, limit: null } },
 						}
-					: { teams: [] };
+					: href.includes("/api/dashboard/get-aggregated-usage-events")
+						? { aggregations: [{ modelIntent: "claude-4.6-opus-high", totalCents: 2500 }], totalCostCents: 2500 }
+						: { teams: [] };
 		return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 	};
 	const reader = new CursorUsageReader(auth, { fetch: fetchImpl, now: () => 1787000000000 });
@@ -478,13 +525,101 @@ test("CursorUsageReader builds the dashboard cookie and parses live responses", 
 	assert.equal(usage.includedRequests.used, 100);
 	assert.equal(usage.includedRequests.limit, 500);
 	assert.equal(usage.plan.totalPercentUsed, 20);
+	assert.equal(usage.plan.autoPercentUsed, 12);
+	assert.equal(usage.plan.apiPercentUsed, 40);
+	assert.deepEqual(usage.models, [{ id: "claude-4.6-opus-high", spentDollars: 25, pct: 100 }]);
 	assert.equal(usage.billingCycle.daysLeft, 3);
 	assert.equal(usage.individualOnDemand.usedDollars, 1);
-	assert.equal(seen.length, 3);
+	assert.equal(seen.length, 4);
 	for (const entry of seen) {
 		assert.equal(entry.cookie, `WorkosCursorSessionToken=user_01TEST::${access}`);
 	}
 	assert.ok(seen.some((entry) => entry.method === "POST" && entry.url.includes("/api/dashboard/teams")));
+	assert.ok(seen.some((entry) => entry.method === "POST" && entry.url.includes("/api/dashboard/get-aggregated-usage-events")));
+});
+
+test("CursorUsageReader keeps summary usage when aggregated model spend is unavailable", async () => {
+	const access = `${Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "github|user_01TEST" })).toString("base64url")}.sig`;
+	const auth = {
+		credential: async () => ({ access, refresh: "r", expires: Date.now() + 1e6 }),
+	};
+	const fetchImpl = async (url) => {
+		const href = String(url);
+		if (href.includes("/api/dashboard/get-aggregated-usage-events")) {
+			return new Response("nope", { status: 404 });
+		}
+		const body = href.includes("/api/usage-summary")
+			? {
+					membershipType: "pro",
+					individualUsage: { plan: { autoPercentUsed: 10, apiPercentUsed: 90 } },
+				}
+			: href.includes("/api/usage?user=")
+				? { "gpt-4": { numRequests: 1, maxRequestUsage: 500 } }
+				: { teams: [] };
+		return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+	};
+	const usage = await new CursorUsageReader(auth, { fetch: fetchImpl, now: () => 1787000000000 }).read();
+	assert.equal(usage.plan.apiPercentUsed, 90);
+	assert.deepEqual(usage.models, []);
+});
+
+test("CursorUsageReader always emits apiPercentUsed from the API usage message", async () => {
+	const access = `${Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "github|user_01TEST" })).toString("base64url")}.sig`;
+	const auth = {
+		credential: async () => ({ access, refresh: "r", expires: Date.now() + 1e6 }),
+	};
+	const fetchImpl = async (url) => {
+		const href = String(url);
+		if (href.includes("/api/dashboard/get-aggregated-usage-events")) {
+			return new Response("nope", { status: 404 });
+		}
+		const body = href.includes("/api/usage-summary")
+			? {
+					membershipType: "pro",
+					namedModelSelectedDisplayMessage: "You've used 100% of your included API usage",
+					individualUsage: { plan: { autoPercentUsed: 10 } },
+				}
+			: href.includes("/api/usage?user=")
+				? { "gpt-4": { numRequests: 1, maxRequestUsage: 500 } }
+				: { teams: [] };
+		return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+	};
+	const usage = await new CursorUsageReader(auth, { fetch: fetchImpl, now: () => 1787000000000 }).read();
+	assert.equal(usage.plan.autoPercentUsed, 10);
+	assert.equal(usage.plan.apiPercentUsed, 100);
+});
+
+test("CursorUsageReader keeps summary percents when teams and usage endpoints fail", async () => {
+	const access = `${Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "github|user_01TEST" })).toString("base64url")}.sig`;
+	const auth = {
+		credential: async () => ({ access, refresh: "r", expires: Date.now() + 1e6 }),
+	};
+	const fetchImpl = async (url) => {
+		const href = String(url);
+		if (href.includes("/api/usage-summary")) {
+			return new Response(JSON.stringify({
+				membershipType: "enterprise",
+				individualUsage: { plan: { autoPercentUsed: 42, apiPercentUsed: 100 } },
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		}
+		return new Response("nope", { status: 500 });
+	};
+	const usage = await new CursorUsageReader(auth, { fetch: fetchImpl, now: () => 1787000000000 }).read();
+	assert.equal(usage.plan.autoPercentUsed, 42);
+	assert.equal(usage.plan.apiPercentUsed, 100);
+	assert.deepEqual(usage.models, []);
+});
+
+test("CursorUsageReader surfaces HTTP status when summary and usage both fail", async () => {
+	const access = `${Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub: "github|user_01TEST" })).toString("base64url")}.sig`;
+	const auth = {
+		credential: async () => ({ access, refresh: "r", expires: Date.now() + 1e6 }),
+	};
+	const fetchImpl = async () => new Response("nope", { status: 401 });
+	await assert.rejects(
+		() => new CursorUsageReader(auth, { fetch: fetchImpl, now: () => 1787000000000 }).read(),
+		/HTTP 401/,
+	);
 });
 
 test("parseEndStream extracts the real Cursor error and classifies quota exhaustion", () => {

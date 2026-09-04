@@ -13,7 +13,7 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - Discover models available to the current account dynamically through Cursor's `GetUsableModels`, with a built-in fallback list if discovery fails.
 - Stream conversations with reasoning output and DSH tool calls.
 - View sign-in status and token expiration in the settings page.
-- View and manually refresh subscription usage, including requests, plan usage percentage, on-demand spend, and billing cycle.
+- View and manually refresh subscription usage, including requests, Auto + Composer usage, other-model (API) usage, per-model spend, on-demand spend, and billing cycle.
 - View and manually refresh the models available to the current account.
 - Configure the per-run tool-round limit and HTTP retry count, interval, and status codes from the settings page.
 
