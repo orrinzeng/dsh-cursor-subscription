@@ -74,6 +74,19 @@ test("nativeFetch surfaces HTTP status and non-2xx as not ok", async () => {
 	}
 });
 
+test("nativeFetch exposes promise-based text for Response compatibility", async () => {
+	const { server, base } = await startServer((req, res) => {
+		res.writeHead(200, { "content-type": "text/plain" });
+		res.end("hello");
+	});
+	try {
+		const r = await nativeFetch(`${base}/x`);
+		assert.equal(await r.text().catch(() => ""), "hello");
+	} finally {
+		server.close();
+	}
+});
+
 test("nativeFetch exposes arrayBuffer for proto responses", async () => {
 	const { server, base } = await startServer((req, res) => {
 		res.writeHead(200, { "content-type": "application/proto" });
