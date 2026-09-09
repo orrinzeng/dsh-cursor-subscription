@@ -74,26 +74,6 @@ dsh plugin --profile web remove dsh-cursor-subscription   # 卸载
 
 如果 DSH 正在运行，安装或更新后请手动重启。
 
-## 发布到 npmjs
-
-维护者发布新版本（供 `dsh plugin add` / `update` 从 npm 安装）时，先在
-`package.json` 中把 `version` 改成新版本号，然后：
-
-```sh
-# 预览将要发布的文件（只应包含 lib/、cordis.patch.yml、README/AGENTS/LICENSE、package.json）
-npm pack --dry-run
-
-# 运行测试并发布到 npmjs（发布前会自动执行 prepublishOnly 里的测试）
-npm publish
-
-# 从任意目录验证线上版本
-npm view dsh-cursor-subscription version
-```
-
-发布前请先 `git commit` 并 `git push`，确保 `repository` 指向的提交与包内容一致。
-包名 `dsh-cursor-subscription` 与 publishConfig 已固定在官方 registry
-（`https://registry.npmjs.org/`）；首次发布或凭据过期时执行 `npm login`。
-
 ## 常见问题
 
 - **登录后仍提示未登录**：确认浏览器完成了整个授权流程（登录页跳转回完成页）；
