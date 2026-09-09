@@ -16,7 +16,7 @@
 - 在 DSH 中直接使用 Cursor 订阅（浏览器 PKCE 登录，无 API Key）；
 - 登录凭据保存在本机 DSH credential 存储中，自动刷新访问令牌；
 - 通过 Cursor 的 `GetUsableModels` 动态发现当前账户可用的模型（失败时回退到内置列表）；
-- 流式对话，支持思考过程（reasoning）与 DSH 工具调用；
+- 流式对话，支持思考过程（reasoning）、用户图片附件与 DSH 工具调用；
 - 设置页可查看登录状态与令牌有效期；
 - 设置页可查询订阅用量（包含请求、Auto + Composer、其他模型占比、各模型消费、按需消费、账单周期）并手动刷新；
 - 设置页可查看当前账户可用的模型列表并手动刷新；
@@ -85,7 +85,7 @@ dsh plugin --profile web remove dsh-cursor-subscription   # 卸载
 
 ## 边界与支持
 
-- 图片生成、联网搜索等 Cursor 内置能力不在本插件范围内；
+- 支持用户上传图片作为输入。图片生成、联网搜索等 Cursor 内置能力仍不在本插件范围内；
 - 问题反馈请在仓库 Issues 中提交。
 
 [MIT](LICENSE)

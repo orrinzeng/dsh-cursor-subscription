@@ -11,7 +11,7 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - Use a Cursor subscription directly in DSH through browser-based PKCE sign-in—no API key required.
 - Store credentials in DSH's local credential store and refresh access tokens automatically.
 - Discover models available to the current account dynamically through Cursor's `GetUsableModels`, with a built-in fallback list if discovery fails.
-- Stream conversations with reasoning output and DSH tool calls.
+- Stream conversations with reasoning output, image attachments, and DSH tool calls.
 - View sign-in status and token expiration in the settings page.
 - View and manually refresh subscription usage, including requests, Auto + Composer usage, other-model (API) usage, per-model spend, on-demand spend, and billing cycle.
 - View and manually refresh the models available to the current account.
@@ -72,7 +72,7 @@ If DSH is running, restart it manually after installation or an update.
 
 ## Scope and Support
 
-- Cursor-native features such as image generation and web search are outside this plugin's scope.
+- Image *input* (user-uploaded attachments) is supported. Cursor-native features such as image generation and web search remain outside this plugin's scope.
 - Report problems through the repository's Issues page.
 
 [MIT](LICENSE)
