@@ -36,7 +36,8 @@
     }
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "prepublishOnly": "pnpm test"
   },
   "keywords": [
     "dsh-plugin",
@@ -55,6 +56,10 @@
     "url": "https://github.com/orrinzeng/dsh-cursor-subscription"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
@@ -75,4 +80,3 @@
     "react": "^18.2.0"
   }
 }
-

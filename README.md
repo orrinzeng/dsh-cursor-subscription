@@ -63,6 +63,23 @@ dsh plugin --profile web remove dsh-cursor-subscription   # Remove
 
 If DSH is running, restart it manually after installation or an update.
 
+## Publishing to npmjs
+
+To release a new version (so `dsh plugin add` / `update` install it from npm), bump the `version` field in `package.json` first, then:
+
+```sh
+# Preview the files that will be published (only lib/, cordis.patch.yml, README/AGENTS/LICENSE, package.json)
+npm pack --dry-run
+
+# Run tests and publish to npmjs (prepublishOnly runs the test suite first)
+npm publish
+
+# Verify the published version from any directory
+npm view dsh-cursor-subscription version
+```
+
+Commit and push to the repository before publishing so the package content matches the commit referenced by the `repository` field. The package name `dsh-cursor-subscription` and `publishConfig` are pinned to the official registry (`https://registry.npmjs.org/`); run `npm login` for the first publish or when credentials expire.
+
 ## Troubleshooting
 
 - **DSH still reports that you are signed out after sign-in:** Make sure the browser completed the entire authorization flow and redirected to the completion page. Polling waits for up to approximately 2.5 minutes.
