@@ -41,6 +41,22 @@ test("nativeFetch sends headers and method and parses JSON", async () => {
 	}
 });
 
+test("nativeFetch text returns a Fetch-compatible promise", async () => {
+	const { server, base } = await startServer((_req, res) => {
+		res.writeHead(200, { "content-type": "text/plain" });
+		res.end("hello");
+	});
+	try {
+		const r = await nativeFetch(`${base}/x`);
+		const text = r.text();
+		assert.equal(typeof text.then, "function");
+		assert.equal(typeof text.catch, "function");
+		assert.equal(await text.catch(() => ""), "hello");
+	} finally {
+		server.close();
+	}
+});
+
 test("nativeFetch follows redirects by default", async () => {
 	const { server, base } = await startServer((req, res) => {
 		if (req.url === "/start") {
