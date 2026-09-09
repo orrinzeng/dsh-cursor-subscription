@@ -1,6 +1,6 @@
 {
   "name": "dsh-cursor-subscription",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "packageManager": "pnpm@11.19.0",
   "description": "Cursor subscription for DeepSeek Harness with browser login, token refresh, model discovery, and the Cursor Agent chat protocol",
   "type": "module",
@@ -49,7 +49,11 @@
     "oauth",
     "pkce"
   ],
-  "author": "dsh-cursor-subscription contributors",
+  "author": "orrinzeng",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orrinzeng/dsh-cursor-subscription"
+  },
   "license": "MIT",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
