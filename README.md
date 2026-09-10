@@ -33,6 +33,13 @@ dsh --profile web --dump-config
 
 The installed package list should contain exactly one `dsh-cursor-subscription`, and the composed configuration should contain exactly one `cursor-subscription` entry.
 
+pnpm 11 and later ship a built-in 24-hour `minimumReleaseAge` gate, so a plain `add` never selects a version published within the last 24 hours. Right after a release, install it explicitly (`dsh plugin --profile web add dsh-cursor-subscription@0.5.8`) or exempt this package by name in the profile's `pnpm-workspace.yaml`:
+
+```yaml
+minimumReleaseAgeExclude:
+  - dsh-cursor-subscription
+```
+
 ### Local Development Installation
 
 Run the following command in the profile directory, such as `%USERPROFILE%\.dsh\profiles\web`:
@@ -69,6 +76,7 @@ If DSH is running, restart it manually after installation or an update.
 - **The model list is empty:** `GetUsableModels` depends on the account type. If discovery fails, the plugin uses its built-in model list, and you can still enter a model name manually.
 - **Requests return 401:** If the access token has expired and the refresh token is no longer valid, sign in again from the settings page.
 - **DSH fails to start with `cannot get property "webServer" without inject`:** The installed DSH's Connection plugin does not declare `webServer`, which the older channel registration relied on. Install version 0.5.8 or later of this plugin.
+- **A plain install picks an old version:** pnpm's built-in 24-hour `minimumReleaseAge` gate skips releases published within the last day. Install an explicit version or exempt this package by name; see the installation section.
 - **The server protocol changed:** Cursor's Agent protocol is unpublished. If requests fail, check for a plugin update.
 
 ## Scope and Support

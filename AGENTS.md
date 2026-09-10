@@ -32,6 +32,23 @@ Then ensure `dsh-cursor-subscription` is listed in the profile
 `package.json` under `dsh.profile.bundles` (the `dsh plugin add` command does
 this automatically for published packages).
 
+pnpm (11+) applies a built-in 24-hour `minimumReleaseAge` supply-chain gate, so a
+range such as `^0.5.0` never selects a version published within the last 24
+hours. Right after a release, a plain `add` or `update` therefore falls back to
+the newest release older than 24 hours — for a young package, the earliest
+published version. Install the newest release by exempting this package by name
+in the profile `pnpm-workspace.yaml`:
+
+```yaml
+minimumReleaseAgeExclude:
+  - dsh-cursor-subscription
+```
+
+Requesting one version explicitly (`dsh plugin --profile web add
+dsh-cursor-subscription@0.5.8`) also works: pnpm then appends that single
+version to the same list. Do not set `minimumReleaseAge: 0` just to install this
+plugin; that drops the protection for every package in the profile.
+
 Update with `dsh plugin --profile web update dsh-cursor-subscription`.
 Uninstall with `dsh plugin --profile web remove dsh-cursor-subscription`.
 
@@ -44,7 +61,9 @@ dsh --profile web --dump-config
 
 Success requires:
 
-1. The requested package version appears once.
+1. The requested package version appears once. A version older than the one
+   requested means pnpm's 24-hour release-age gate resolved the range; see
+   Install.
 2. `cursor-subscription` appears once in the composed config after install
    or update, and is absent after uninstall.
 3. No unrelated profile or plugin changed.

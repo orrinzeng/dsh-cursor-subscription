@@ -39,6 +39,16 @@ dsh --profile web --dump-config
 安装列表中应只有一个 `dsh-cursor-subscription`，配置中应只有一个
 `cursor-subscription` 条目。
 
+pnpm 11 及以后内置了 24 小时的 `minimumReleaseAge` 供应链防护：普通 `add`
+不会选择 24 小时内发布的版本。刚发布完新版本时，请显式指定版本安装
+（`dsh plugin --profile web add dsh-cursor-subscription@0.5.8`），或在 profile 的
+`pnpm-workspace.yaml` 里按包名豁免：
+
+```yaml
+minimumReleaseAgeExclude:
+  - dsh-cursor-subscription
+```
+
 ### 本地开发安装
 
 在 profile 目录（如 `%USERPROFILE%\.dsh\profiles\web`）执行：
@@ -84,6 +94,8 @@ dsh plugin --profile web remove dsh-cursor-subscription   # 卸载
 - **DSH 启动失败并报 `cannot get property "webServer" without inject`**：当前 DSH 的
   Connection 插件不再自己声明 `webServer`，旧版插件注册账户通道时依赖了它。请安装
   0.5.8 或更高版本的本插件。
+- **普通安装装到的是旧版本**：pnpm 内置的 24 小时 `minimumReleaseAge` 防护会跳过
+  最近一天内发布的版本。请显式指定版本安装，或按包名豁免该包；见安装章节。
 - **服务端协议变更**：Cursor 的 Agent 协议是未公开接口，若请求失败请检查插件更新。
 
 ## 边界与支持
