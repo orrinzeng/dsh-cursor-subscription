@@ -68,6 +68,7 @@ If DSH is running, restart it manually after installation or an update.
 - **DSH still reports that you are signed out after sign-in:** Make sure the browser completed the entire authorization flow and redirected to the completion page. Polling waits for up to approximately 2.5 minutes.
 - **The model list is empty:** `GetUsableModels` depends on the account type. If discovery fails, the plugin uses its built-in model list, and you can still enter a model name manually.
 - **Requests return 401:** If the access token has expired and the refresh token is no longer valid, sign in again from the settings page.
+- **DSH fails to start with `cannot get property "webServer" without inject`:** The installed DSH's Connection plugin does not declare `webServer`, which the older channel registration relied on. Install version 0.5.8 or later of this plugin.
 - **The server protocol changed:** Cursor's Agent protocol is unpublished. If requests fail, check for a plugin update.
 
 ## Scope and Support

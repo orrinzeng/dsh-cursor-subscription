@@ -81,6 +81,9 @@ dsh plugin --profile web remove dsh-cursor-subscription   # 卸载
 - **模型列表为空**：`GetUsableModels` 依赖账户类型，失败时插件会使用内置模型列表，
   仍可手动输入模型名。
 - **请求报 401**：令牌过期且 refresh token 失效时，需要在设置页重新登录。
+- **DSH 启动失败并报 `cannot get property "webServer" without inject`**：当前 DSH 的
+  Connection 插件不再自己声明 `webServer`，旧版插件注册账户通道时依赖了它。请安装
+  0.5.8 或更高版本的本插件。
 - **服务端协议变更**：Cursor 的 Agent 协议是未公开接口，若请求失败请检查插件更新。
 
 ## 边界与支持

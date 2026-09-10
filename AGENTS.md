@@ -61,6 +61,14 @@ streamed reply appears in the conversation.
 
 - If the settings page reports "无法读取 Cursor 状态" the loopback RPC failed;
   confirm the plugin bundle is listed once in the composed config.
+- A boot failure reading `plugin tree failed to load: failed to apply loader
+  entry cursor-subscription ... cannot get property "webServer" without inject`
+  means a plugin build that mounted its account channel through
+  `connection.rpc.handle` ran against a DSH whose Connection plugin no longer
+  declares `webServer` (for example DSH 0.1.5-rc.1). Install version 0.5.8 or
+  later, whose channel mount passes an owner context that declares `webServer`.
+  Do not fix this by adding `webServer` to the plugin's own `inject`: the failing
+  read happens on the providing plugin's scope and stays broken.
 - A "Cursor subscription is not signed in" error on a model call means the
   credential store is empty; the user must complete the browser login flow.
 - Cursor's Agent protocol is undocumented and changes; a transport or
