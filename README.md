@@ -12,7 +12,7 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - Store credentials in DSH's local credential store and refresh access tokens automatically.
 - Discover models available to the current account dynamically through Cursor's `GetUsableModels`, with a built-in fallback list if discovery fails.
 - Stream conversations with reasoning output, image attachments, and DSH tool calls.
-- View sign-in status and token expiration in the settings page.
+- View sign-in status and token expiration in the settings page, which labels itself with the installed build version.
 - View and manually refresh subscription usage, including requests, Auto + Composer usage, other-model (API) usage, per-model spend, on-demand spend, and billing cycle.
 - View and manually refresh the models available to the current account.
 - Configure the per-run tool-round limit and HTTP retry count, interval, and status codes from the settings page.

@@ -76,6 +76,12 @@ If the user authorizes a live check, restart DSH manually, open
 explicitly requests a live check, run one simple chat message and confirm the
 streamed reply appears in the conversation.
 
+The section title carries the version of the installed build next to it. That
+number comes from the plugin's own manifest over the account channel, so it
+matches `dsh plugin --profile web list dsh-cursor-subscription --depth 0`; a
+missing chip on a loaded panel means the version request failed, not that the
+plugin is unloaded.
+
 The panel also contributes languages: besides the built-in Simplified Chinese and
 English, **Settings -> General -> Language** lists Traditional Chinese, Japanese,
 Korean, Spanish, French, German, Italian, Brazilian Portuguese, Russian, and
