@@ -76,6 +76,15 @@ If the user authorizes a live check, restart DSH manually, open
 explicitly requests a live check, run one simple chat message and confirm the
 streamed reply appears in the conversation.
 
+The panel also contributes languages: besides the built-in Simplified Chinese and
+English, **Settings -> General -> Language** lists Traditional Chinese, Japanese,
+Korean, Spanish, French, German, Italian, Brazilian Portuguese, Russian, and
+Arabic, and the panel mirrors itself for Arabic. Those entries come from the
+panel's own `ctx.locale.addLanguage` calls, so they only appear on a DSH whose
+locale runtime supports language packs; elsewhere the panel silently stays
+zh/en. A missing language in that list is a locale-runtime question, not a
+plugin-load failure.
+
 ## Failure handling
 
 - If the settings page reports "无法读取 Cursor 状态" the loopback RPC failed;
