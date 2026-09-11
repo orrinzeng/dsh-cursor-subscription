@@ -22,7 +22,7 @@ minimumReleaseAgeExclude:
 ```
 
 按包名豁免只对这个包放行，其他依赖仍受该防护约束。完整的安装与验收流程见
-[AGENTS.md](AGENTS.md)。
+[AGENTS.md](https://github.com/orrinzeng/dsh-cursor-subscription/blob/master/AGENTS.md)。
 
 ## 修复
 
@@ -85,7 +85,7 @@ minimumReleaseAgeExclude:
 - **刷新 lockfile**：`pnpm-lock.yaml` 里 `@deepseek-ai/dsh-client-connection` 仍记着
   放宽前的 `0.1.0-rc.6`，而 `package.json` 声明的是 `>=0.1.0-rc.6 <0.2.0`，
   `--frozen-lockfile` 会直接拒绝；现在 14 个 peer specifier 与清单完全一致。
-- **文档**：两份 README 与 [AGENTS.md](AGENTS.md) 都补充了 pnpm 发布年龄门限、
+- **文档**：两份 README 与 [AGENTS.md](https://github.com/orrinzeng/dsh-cursor-subscription/blob/master/AGENTS.md) 都补充了 pnpm 发布年龄门限、
   新增语言与版本号显示说明。
 - **测试**：共 70 个——协议 41、面板文案契约 8、通道挂载 6、版本号 6、
   native fetch 6、图片输入 3。

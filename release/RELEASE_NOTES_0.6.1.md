@@ -23,7 +23,7 @@ minimumReleaseAgeExclude:
 ```
 
 The exemption keeps the gate active for every other package. See
-[AGENTS.md](AGENTS.md) for the full install and verification procedure.
+[AGENTS.md](https://github.com/orrinzeng/dsh-cursor-subscription/blob/master/AGENTS.md) for the full install and verification procedure.
 
 ## Fixed
 
@@ -100,7 +100,7 @@ never turns the panel into an error state.
   `0.1.0-rc.6` specifier for `@deepseek-ai/dsh-client-connection` while
   `package.json` declares `>=0.1.0-rc.6 <0.2.0`, which a frozen install refuses.
   All 14 peer specifiers now match the manifest.
-- **Documentation.** Both readmes and [AGENTS.md](AGENTS.md) document the pnpm
+- **Documentation.** Both readmes and [AGENTS.md](https://github.com/orrinzeng/dsh-cursor-subscription/blob/master/AGENTS.md) document the pnpm
   release-age gate, the contributed languages, and the version label.
 - **Tests:** 70 in total — 41 agent-protocol, 8 panel-language contract,
   6 channel mount, 6 version label, 6 native fetch, 3 image input.
