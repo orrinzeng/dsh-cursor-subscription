@@ -8,6 +8,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http2 from "node:http2";
+import { readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
 	varintEncode,
@@ -810,6 +813,7 @@ test("Cursor adapter stalls when the server only sends heartbeats", async () => 
 		createAgentRun: () => run,
 		progressTimeoutMs: 80,
 		idleCheckIntervalMs: 25,
+		hangTracePath: join(tmpdir(), `cursor-hang-${process.pid}-stall.log`),
 	});
 	const chunks = [];
 	for await (const chunk of adapter.stream({
@@ -823,6 +827,82 @@ test("Cursor adapter stalls when the server only sends heartbeats", async () => 
 	assert.equal(finish.reason.kind, "error");
 	assert.equal(finish.reason.failure.code, "TIMEOUT");
 	assert.match(finish.reason.failure.message, /progress timeout/);
+});
+
+test("Cursor adapter keeps a delivered answer when the server goes silent", async () => {
+	// AgentServerMessage { interaction_update = 1 } ->
+	//   InteractionUpdate { text_delta = 1 { text = 1 } } / { heartbeat = 13 }
+	const textFrame = new Writer()
+		.message(1, new Writer().message(1, new Writer().string(1, "已完成的结论").finish()).finish())
+		.finish();
+	const heartbeatFrame = new Writer()
+		.message(1, new Writer().message(13, new Uint8Array(0)).finish())
+		.finish();
+	const queue = [textFrame];
+	let ended = false;
+	let failure;
+	class SilentRun {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = {
+				next: async () => {
+					if (failure !== undefined) throw failure;
+					if (ended) return undefined;
+					const frame = queue.shift();
+					if (frame !== undefined) return { flags: 0, payload: frame };
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					if (failure !== undefined) throw failure;
+					return ended ? undefined : { flags: 0, payload: heartbeatFrame };
+				},
+				finish: () => {
+					ended = true;
+				},
+				fail: (error) => {
+					failure = error;
+					ended = true;
+				},
+				ended: false,
+			};
+		}
+		async start() {}
+		writeMessage() { return true; }
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort(error) { this.frames.fail(error); this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const tracePath = join(tmpdir(), `cursor-hang-${process.pid}-${Date.now()}.log`);
+	rmSync(tracePath, { force: true });
+	const run = new SilentRun();
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => run,
+		progressTimeoutMs: 60,
+		idleCheckIntervalMs: 15,
+		hangTracePath: tracePath,
+	});
+	const chunks = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "silent-after-answer",
+		messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+	})) chunks.push(chunk);
+	const finish = chunks.at(-1);
+	assert.equal(finish.type, "finish");
+	assert.deepEqual(finish.reason, { kind: "stop" });
+	assert.equal(
+		chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text).join(""),
+		"已完成的结论",
+	);
+	const trace = readFileSync(tracePath, "utf8");
+	assert.match(trace, /progress timeout/);
+	assert.match(trace, /text\(6\)/);
+	assert.match(trace, /heartbeat/);
+	rmSync(tracePath, { force: true });
 });
 
 test("Cursor adapter finishes the step when the server signals turn_ended", async () => {
