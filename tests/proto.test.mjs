@@ -840,6 +840,7 @@ test("Cursor adapter keeps a delivered answer when the server goes silent", asyn
 		.finish();
 	const queue = [textFrame];
 	let ended = false;
+	let paused = false;
 	let failure;
 	class SilentRun {
 		constructor() {
@@ -852,9 +853,13 @@ test("Cursor adapter keeps a delivered answer when the server goes silent", asyn
 					if (ended) return undefined;
 					const frame = queue.shift();
 					if (frame !== undefined) return { flags: 0, payload: frame };
+					if (paused) return undefined;
 					await new Promise((resolve) => setTimeout(resolve, 5));
 					if (failure !== undefined) throw failure;
 					return ended ? undefined : { flags: 0, payload: heartbeatFrame };
+				},
+				pause: () => {
+					paused = true;
 				},
 				finish: () => {
 					ended = true;
@@ -903,6 +908,114 @@ test("Cursor adapter keeps a delivered answer when the server goes silent", asyn
 	assert.match(trace, /text\(6\)/);
 	assert.match(trace, /heartbeat/);
 	rmSync(tracePath, { force: true });
+});
+
+test("Cursor adapter returns MCP tool calls when no checkpoint follows mcpArgs", async () => {
+	// Traced hang shape: `toolCallStarted | checkpoint | exec:mcpArgs` and then
+	// nothing but heartbeats. The step must hand its tool call to DSH instead of
+	// waiting for a second checkpoint until the progress watchdog fires.
+	const tools = [{
+		name: "bash",
+		description: "run shell",
+		parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+	}];
+	const heartbeatFrame = new Writer()
+		.message(1, new Writer().message(13, new Uint8Array(0)).finish())
+		.finish();
+	const queue = [
+		{ flags: 0, payload: encodeAgentCheckpointFrame(new Uint8Array([1, 2, 3])) },
+		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 1, execId: "exec-1", name: "bash", toolCallId: "tool-1", toolName: "bash", args: { command: "pwd" } }) },
+	];
+	const paused = { value: false };
+	class BurstRun {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = {
+				next: async () => {
+					const frame = queue.shift();
+					if (frame !== undefined) return frame;
+					if (paused.value) return undefined;
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					return { flags: 0, payload: heartbeatFrame };
+				},
+				pause: () => {
+					paused.value = true;
+				},
+				resume: () => {
+					paused.value = false;
+				},
+				finish: () => {
+					paused.value = true;
+				},
+			};
+		}
+		async start() {}
+		writeMessage() { return true; }
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const run = new BurstRun();
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => run,
+		toolCallSettleMs: 40,
+		progressTimeoutMs: 5000,
+		idleCheckIntervalMs: 25,
+		hangTracePath: join(tmpdir(), `cursor-hang-${process.pid}-burst.log`),
+	});
+	const chunks = [];
+	const startedAt = Date.now();
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "tool-burst",
+		tools,
+		messages: [{ role: "user", content: [{ type: "text", text: "inspect" }] }],
+	})) chunks.push(chunk);
+	assert.ok(Date.now() - startedAt < 2000, "the tool-call step must settle instead of waiting for the watchdog");
+	assert.deepEqual(chunks.at(-1).reason, { kind: "tool-calls" });
+	assert.deepEqual(
+		chunks.filter((chunk) => chunk.type === "block-end" && chunk.block?.type === "tool-call").map((chunk) => chunk.block.name),
+		["bash"],
+	);
+	assert.equal(run.finished, false, "the run must stay alive so the tool result can resume it");
+	assert.equal(paused.value, true, "the reader must be paused, not ended");
+
+	// The next DSH step resumes the same run and reads it again.
+	const written = [];
+	run.writeMessage = (bytes) => {
+		written.push(Buffer.from(bytes));
+		return true;
+	};
+	queue.push({
+		flags: 0,
+		payload: new Writer().message(1, new Writer().message(1, new Writer().string(1, "工具结果已收到").finish()).finish()).finish(),
+	});
+	queue.push({ flags: 0, payload: encodeAgentCheckpointFrame(new Uint8Array([4, 5, 6])) });
+	queue.push({ flags: 0, payload: new Writer().message(1, new Writer().message(14, new Uint8Array(0)).finish()).finish() });
+	const second = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "tool-burst",
+		tools,
+		messages: [
+			{ role: "user", content: [{ type: "text", text: "inspect" }] },
+			{ role: "assistant", content: [{ type: "tool-call", id: "tool-1", name: "bash", arguments: "{\"command\":\"pwd\"}" }] },
+			{ role: "user", content: [{ type: "tool-result", toolCallId: "tool-1", content: [{ type: "text", text: "/tmp" }], isError: false }] },
+		],
+	})) second.push(chunk);
+	assert.equal(written.length, 1, "the resumed step must send exactly one MCP result");
+	assert.equal(
+		second.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text).join(""),
+		"工具结果已收到",
+	);
+	assert.deepEqual(second.at(-1).reason, { kind: "stop" });
 });
 
 test("Cursor adapter finishes the step when the server signals turn_ended", async () => {
