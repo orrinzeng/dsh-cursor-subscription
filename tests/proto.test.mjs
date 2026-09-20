@@ -46,6 +46,9 @@ import {
 	computeIncludedRequests,
 	parseUsageSummary,
 	parseModelAggregations,
+	parseModelUsage,
+	usagePools,
+	usageModelPool,
 	parseRequestQuotaPerSeat,
 	resolveCursorSettings,
 	shouldRetryHttpStatus,
@@ -473,21 +476,137 @@ test("parseUsageSummary reads team plan percents when individual plan is absent"
 });
 
 test("parseModelAggregations sorts named models by spend and drops empty rows", () => {
-	const models = parseModelAggregations({
-		aggregations: [
-			{ modelIntent: "claude-4.6-opus-high", totalCents: 2826.24 },
-			{ modelIntent: "cursor-grok-4.6-high", totalCents: 17612.98 },
-			{ modelIntent: "composer-2", totalCents: 0 },
-			{ modelIntent: "  ", totalCents: 12 },
-		],
-		totalCostCents: 20439.22,
-	});
+	const models = parseModelAggregations(
+		{
+			aggregations: [
+				{ modelIntent: "claude-4.6-opus-high", totalCents: 2826.24, tier: 1 },
+				{ modelIntent: "cursor-grok-4.6-high", totalCents: 17612.98, tier: 1 },
+				{ modelIntent: "composer-2", totalCents: 0, tier: 2 },
+				{ modelIntent: "  ", totalCents: 12, tier: 1 },
+			],
+			totalCostCents: 20439.22,
+		},
+		{ apiPercentUsed: 100 },
+	);
 	assert.deepEqual(models, [
-		{ id: "cursor-grok-4.6-high", spentDollars: 176.13, pct: 86.2 },
-		{ id: "claude-4.6-opus-high", spentDollars: 28.26, pct: 13.8 },
+		{ id: "cursor-grok-4.6-high", pool: "api", spentDollars: 176.13, pct: 86.2 },
+		{ id: "claude-4.6-opus-high", pool: "api", spentDollars: 28.26, pct: 13.8 },
 	]);
 	assert.deepEqual(parseModelAggregations({ aggregations: [] }), []);
 	assert.deepEqual(parseModelAggregations({}), []);
+});
+
+test("parseModelAggregations scales each model by its own pool percentage", () => {
+	// A single Other Models model reads the pool row's percentage, which is what
+	// the dashboard prints for it — not this list's internal 100% share.
+	const live = parseModelAggregations(
+		{ aggregations: [{ modelIntent: "claude-opus-5-high", totalCents: 3120.763055, tier: 1 }] },
+		{ autoPercentUsed: 0, apiPercentUsed: 15.604999999999999 },
+	);
+	assert.deepEqual(live, [{ id: "claude-opus-5-high", pool: "api", spentDollars: 31.21, pct: 15.6 }]);
+
+	// Two models of one pool split that pool's percentage by their spend.
+	const shared = parseModelAggregations(
+		{
+			aggregations: [
+				{ modelIntent: "claude-opus-5-high", totalCents: 3120.763, tier: 1 },
+				{ modelIntent: "gpt-5", totalCents: 1040.254, tier: 1 },
+			],
+		},
+		{ apiPercentUsed: 15.604999999999999 },
+	);
+	assert.deepEqual(shared, [
+		{ id: "claude-opus-5-high", pool: "api", spentDollars: 31.21, pct: 11.7 },
+		{ id: "gpt-5", pool: "api", spentDollars: 10.4, pct: 3.9 },
+	]);
+
+	// Cursor Models rows scale against the auto pool instead.
+	const mixed = parseModelAggregations(
+		{
+			aggregations: [
+				{ modelIntent: "composer-2", totalCents: 7500, tier: 2 },
+				{ modelIntent: "claude-opus-5-high", totalCents: 2500, tier: 1 },
+			],
+		},
+		{ autoPercentUsed: 8, apiPercentUsed: 40 },
+	);
+	assert.deepEqual(mixed, [
+		{ id: "composer-2", pool: "auto", spentDollars: 75, pct: 8 },
+		{ id: "claude-opus-5-high", pool: "api", spentDollars: 25, pct: 40 },
+	]);
+});
+
+test("parseModelAggregations omits pct when the pool percentage is unknown", () => {
+	const models = parseModelAggregations({ aggregations: [{ modelIntent: "gpt-5", totalCents: 500, tier: 1 }] });
+	assert.deepEqual(models, [{ id: "gpt-5", pool: "api", spentDollars: 5 }]);
+	assert.equal("pct" in models[0], false, "an unreported pool percentage is never rendered as 0%");
+});
+
+test("usageModelPool follows the dashboard's tier split", () => {
+	assert.equal(usageModelPool({ modelIntent: "composer-2", tier: 2 }), "auto");
+	assert.equal(usageModelPool({ modelIntent: "composer-2", tier: "2" }), "auto");
+	assert.equal(usageModelPool({ modelIntent: "default" }), "auto");
+	assert.equal(usageModelPool({ modelIntent: "default", tier: 1 }), "api");
+	assert.equal(usageModelPool({ modelIntent: "claude-opus-5-high", tier: 1 }), "api");
+	assert.equal(usageModelPool({ modelIntent: "claude-opus-5-high" }), "api");
+});
+
+test("parseModelUsage reports pool token totals beside the model rows", () => {
+	// The live aggregate for one Other Models model: the pool row and the model
+	// row carry the same tokens and the same percentage, as the dashboard shows.
+	const usage = parseModelUsage(
+		{
+			aggregations: [
+				{
+					modelIntent: "claude-opus-5-high",
+					tier: 1,
+					inputTokens: "196812",
+					outputTokens: "109116",
+					cacheWriteTokens: "1463827",
+					cacheReadTokens: "25216789",
+					totalCents: 3120.763055,
+				},
+				{ modelIntent: "composer-2", tier: 2, inputTokens: 1000, outputTokens: 500, totalCents: 900 },
+			],
+			totalCostCents: 4020.763055,
+		},
+		{ autoPercentUsed: 0.9, apiPercentUsed: 15.604999999999999 },
+	);
+	assert.deepEqual(usage.pools, { auto: { tokens: 1500 }, api: { tokens: 26986544 } });
+	assert.deepEqual(usage.models, [
+		{ id: "claude-opus-5-high", pool: "api", spentDollars: 31.21, tokens: 26986544, pct: 15.6 },
+		{ id: "composer-2", pool: "auto", spentDollars: 9, tokens: 1500, pct: 0.9 },
+	]);
+});
+
+test("parseModelUsage marks Auto usage that spilled into the Other Models pool", () => {
+	const usage = parseModelUsage(
+		{
+			aggregations: [
+				{ modelIntent: "default", tier: 1, totalCents: 5000, inputTokens: 2000 },
+				{ modelIntent: "gpt-5", tier: 1, totalCents: 5000, inputTokens: 500 },
+			],
+		},
+		{ apiPercentUsed: 10 },
+	);
+	assert.deepEqual(usage.models, [
+		{ id: "default", pool: "api", spentDollars: 50, tokens: 2000, overflow: true, pct: 5 },
+		{ id: "gpt-5", pool: "api", spentDollars: 50, tokens: 500, pct: 5 },
+	]);
+	assert.deepEqual(usage.pools, { auto: { tokens: 0 }, api: { tokens: 2500 } });
+});
+
+test("usagePools keeps the reported percentages when the model list is unavailable", () => {
+	assert.deepEqual(usagePools({ autoPercentUsed: 0, apiPercentUsed: 15.605 }, undefined), {
+		auto: { pct: 0 },
+		api: { pct: 15.605 },
+	});
+	assert.deepEqual(usagePools({}, undefined), {});
+	assert.deepEqual(
+		usagePools({ autoPercentUsed: 0 }, { pools: { auto: { tokens: 0 }, api: { tokens: 120 } } }),
+		{ auto: { pct: 0, tokens: 0 }, api: { tokens: 120 } },
+		"a pool with tokens but no reported percentage still renders",
+	);
 });
 
 test("parseRequestQuotaPerSeat finds the active team", () => {
@@ -519,7 +638,10 @@ test("CursorUsageReader builds the dashboard cookie and parses live responses", 
 							individualUsage: { plan: { used: 400, limit: 2000, totalPercentUsed: 20, autoPercentUsed: 12, apiPercentUsed: 40 }, onDemand: { used: 100, limit: null } },
 						}
 					: href.includes("/api/dashboard/get-aggregated-usage-events")
-						? { aggregations: [{ modelIntent: "claude-4.6-opus-high", totalCents: 2500 }], totalCostCents: 2500 }
+						? {
+								aggregations: [{ modelIntent: "claude-4.6-opus-high", totalCents: 2500, tier: 1, inputTokens: 100, cacheReadTokens: 900 }],
+								totalCostCents: 2500,
+							}
 						: { teams: [] };
 		return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 	};
@@ -530,7 +652,8 @@ test("CursorUsageReader builds the dashboard cookie and parses live responses", 
 	assert.equal(usage.plan.totalPercentUsed, 20);
 	assert.equal(usage.plan.autoPercentUsed, 12);
 	assert.equal(usage.plan.apiPercentUsed, 40);
-	assert.deepEqual(usage.models, [{ id: "claude-4.6-opus-high", spentDollars: 25, pct: 100 }]);
+	assert.deepEqual(usage.models, [{ id: "claude-4.6-opus-high", pool: "api", spentDollars: 25, tokens: 1000, pct: 40 }]);
+	assert.deepEqual(usage.pools, { auto: { pct: 12, tokens: 0 }, api: { pct: 40, tokens: 1000 } });
 	assert.equal(usage.billingCycle.daysLeft, 3);
 	assert.equal(usage.individualOnDemand.usedDollars, 1);
 	assert.equal(seen.length, 4);
@@ -564,6 +687,7 @@ test("CursorUsageReader keeps summary usage when aggregated model spend is unava
 	const usage = await new CursorUsageReader(auth, { fetch: fetchImpl, now: () => 1787000000000 }).read();
 	assert.equal(usage.plan.apiPercentUsed, 90);
 	assert.deepEqual(usage.models, []);
+	assert.deepEqual(usage.pools, { auto: { pct: 10 }, api: { pct: 90 } }, "pool percentages survive a failed model read");
 });
 
 test("CursorUsageReader always emits apiPercentUsed from the API usage message", async () => {
