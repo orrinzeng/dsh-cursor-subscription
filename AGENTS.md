@@ -103,6 +103,20 @@ plugin-load failure.
   later, whose channel mount passes an owner context that declares `webServer`.
   Do not fix this by adding `webServer` to the plugin's own `inject`: the failing
   read happens on the providing plugin's scope and stays broken.
+- A boot failure reading `TypeError: ctx.get(...).installSection is not a
+  function` means the DSH release replaced the settings API this plugin was
+  built against. DSH 0.1.7-alpha.1 derives a plugin's settings section from its
+  own Config entry (`configure({ auto: false })`, namespace = profile entry id,
+  editable fields marked `.volatile()` and delivered as live references), and
+  dropped the `installSection`/`settings.register` pair that came before it.
+  Install a build adapted to that API; do not switch profiles or pin DSH blind,
+  because the same release also decides which `@deepseek-ai/*` packages a
+  profile plugin resolves at runtime.
+- A boot failure reading `... .volatile is not a function` while importing the
+  plugin means `@deepseek-ai/schemastery` resolved to a pre-3.18.3 copy, which
+  has no `volatile()`. That library is a runtime dependency of this plugin, so a
+  profile install brings its own copy; a build that still declares it as a peer
+  picks up whatever the profiles tree happens to hold.
 - A "Cursor subscription is not signed in" error on a model call means the
   credential store is empty; the user must complete the browser login flow.
 - Cursor's Agent protocol is undocumented and changes; a transport or

@@ -56,6 +56,7 @@ import {
 	parseRequestQuotaPerSeat,
 	resolveCursorSettings,
 	shouldRetryHttpStatus,
+	Config,
 	CursorAdapter,
 	createCursorRpcHandler,
 	AgentRun,
@@ -968,6 +969,38 @@ test("Cursor runtime settings validate retry and tool limits", () => {
 	assert.throws(() => resolveCursorSettings({ retryCount: 11 }), /retryCount/);
 });
 
+test("Cursor settings read live volatile references", () => {
+	// DSH 0.1.7 hands every `.volatile()` field to the plugin as a reference the
+	// Loader keeps updating in place, so reading the reference is what carries a
+	// saved edit into a Cursor run that is already in flight. A field that loses
+	// the marker also drops the whole section from the generated settings page,
+	// because DSH builds the form from the volatile fields alone.
+	for (const [field, schema] of Object.entries(Config.dict)) {
+		assert.equal(schema.meta?.volatile, true, `${field} must stay volatile: DSH derives the settings page from it`);
+	}
+	/** A Loader reference: one stable object whose value changes in place. */
+	const reference = (initial) => {
+		let current = initial;
+		return { get: () => current, set: (next) => { current = next; } };
+	};
+	const maxToolRounds = reference(17);
+	const live = resolveCursorSettings({
+		maxToolRounds,
+		retryCount: reference(2),
+		retryIntervalMs: reference(250),
+		retryHttpStatusCodes: reference([429]),
+	});
+	assert.equal(live.maxToolRounds, 17);
+	assert.equal(live.retryCount, 2);
+	assert.equal(live.retryIntervalMs, 250);
+	assert.deepEqual(live.retryHttpStatusCodes, [429]);
+	maxToolRounds.set(23);
+	assert.equal(resolveCursorSettings({ maxToolRounds }).maxToolRounds, 23, "a live edit is visible on the next read");
+	// A volatile field the user never set still arrives as a reference, holding
+	// undefined; the documented default applies.
+	assert.equal(resolveCursorSettings({ maxToolRounds: reference(undefined) }).maxToolRounds, 200);
+});
+
 test("Cursor adapter retries configured pre-output HTTP statuses", async () => {
 	const statuses = [503, 200];
 	const created = [];
@@ -1363,6 +1396,130 @@ test("Cursor settings RPC reads and updates only public runtime fields", async (
 	});
 });
 
+test("a Cursor checkpoint captured before DSH compaction is not reused", async () => {
+	// DSH frees context by replacing a span of the conversation with a summary
+	// and marking that message `source.kind = "compact-checkpoint"`. Cursor's own
+	// conversation checkpoint still described the pre-compaction transcript, so
+	// the run continued on the context DSH had just dropped and re-planned the
+	// same work step after step.
+	const COLD_START = "Continue the DSH conversation below.";
+	const userMessage = (text, source) => ({
+		role: "user",
+		...(source === undefined ? {} : { source }),
+		content: [{ type: "text", text }],
+	});
+	const buildAdapter = (runs) => {
+		const written = [];
+		const queues = runs.map((frames) => [...frames]);
+		class Run {
+			constructor() {
+				this.queue = queues.shift() ?? [];
+				this.finished = false;
+				this.stream = { destroyed: false };
+				this.responseContentType = "application/connect+proto";
+				this.frames = {
+					next: async () => this.queue.shift(),
+					pause: () => {},
+					resume: () => {},
+					finish: () => {},
+				};
+			}
+			async start() {}
+			writeMessage(bytes) {
+				written.push(Buffer.from(bytes));
+				return true;
+			}
+			async waitForResponse() { return 200; }
+			startHeartbeat() {}
+			abort() { this.close(); }
+			close() { this.finished = true; this.stream.destroyed = true; }
+		}
+		return {
+			adapter: new CursorAdapter({
+				auth: { accessToken: async () => "test-token" },
+				settings: () => resolveCursorSettings(),
+				createAgentRun: () => new Run(),
+			}),
+			written,
+		};
+	};
+	const drive = async (adapter, sessionId, messages) => {
+		const chunks = [];
+		for await (const chunk of adapter.stream({ provider: "cursor-subscription", model: "test-model", sessionId, messages })) chunks.push(chunk);
+		return chunks;
+	};
+	const seed = [
+		{ flags: 0, payload: encodeAgentCheckpointFrame(new Uint8Array([7, 7, 7])) },
+		{ flags: 0, payload: encodeAgentTurnEndedFrame() },
+	];
+	const quiet = [{ flags: 0, payload: encodeAgentTurnEndedFrame() }];
+
+	const control = buildAdapter([seed, quiet]);
+	await drive(control.adapter, "compaction-control", [userMessage("first request")]);
+	control.written.length = 0;
+	await drive(control.adapter, "compaction-control", [userMessage("first request"), userMessage("second request")]);
+	assert.ok(
+		!control.written.map((bytes) => bytes.toString("utf8")).join("").includes(COLD_START),
+		"a history DSH has not rewritten keeps reusing the Cursor checkpoint",
+	);
+
+	const compacted = buildAdapter([seed, quiet]);
+	await drive(compacted.adapter, "compaction-test", [userMessage("first request")]);
+	compacted.written.length = 0;
+	await drive(compacted.adapter, "compaction-test", [
+		userMessage("first request"),
+		userMessage("condensed summary", { kind: "compact-checkpoint", compactionId: "compaction-1" }),
+	]);
+	assert.ok(
+		compacted.written.map((bytes) => bytes.toString("utf8")).join("").includes(COLD_START),
+		"a compacted history is rebuilt from what DSH kept instead of the stale checkpoint",
+	);
+});
+
+test("the adapter reports a step's token total instead of the last delta", async () => {
+	const queue = [
+		// ConversationStateStructure { token_details = 5 { used_tokens = 1, max_tokens = 2 } }
+		{ flags: 0, payload: encodeAgentCheckpointFrame(new Writer().message(5, new Writer().varint(1, 4096).varint(2, 200000).finish()).finish()) },
+		{ flags: 0, payload: encodeAgentTextFrame("hello") },
+		{ flags: 0, payload: encodeAgentTokenDeltaFrame(4) },
+		{ flags: 0, payload: encodeAgentTokenDeltaFrame(7) },
+		{ flags: 0, payload: encodeAgentTokenDeltaFrame(2) },
+		{ flags: 0, payload: encodeAgentTurnEndedFrame() },
+	];
+	class Run {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = { next: async () => queue.shift(), pause: () => {}, resume: () => {}, finish: () => {} };
+		}
+		async start() {}
+		writeMessage() { return true; }
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => new Run(),
+	});
+	const chunks = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "usage-deltas",
+		messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+	})) chunks.push(chunk);
+	const usage = chunks.find((chunk) => chunk.type === "usage");
+	assert.deepEqual(
+		usage.usage,
+		{ inputTokens: 4096, outputTokens: 13 },
+		"the prompt size comes from the checkpoint Cursor sent, the output from summed deltas",
+	);
+});
+
 function encodeAgentMcpArgsFrame({ id, execId, name, toolCallId, toolName, args = {} }) {
 	const mcp = new Writer();
 	mcp.string(1, name);
@@ -1449,6 +1606,11 @@ function encodeAgentTextFrame(text) {
 
 function encodeAgentTurnEndedFrame() {
 	return new Writer().message(1, new Writer().message(14, new Uint8Array(0)).finish()).finish();
+}
+
+/** InteractionUpdate { token_delta = 8 { tokens = 1 } } — one delta's token count. */
+function encodeAgentTokenDeltaFrame(tokens) {
+	return new Writer().message(1, new Writer().message(8, new Writer().varint(1, tokens).finish()).finish()).finish();
 }
 
 test("the adapter answers an exec it cannot decode instead of ending the turn", async () => {

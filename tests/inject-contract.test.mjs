@@ -39,6 +39,7 @@ const CONTEXT_MIXINS = new Set([
 	"get",
 	"set",
 	"effect",
+	"fiber",
 	"logger",
 	"on",
 	"off",
@@ -76,12 +77,15 @@ function strictContext(declared, services, label = "context") {
  *
  * `withRegister: false` models a Connection build that only exposes the public
  * `rpc` registry; `providerDeclaresWebServer: true` models a build whose own
- * provider scope declares `webServer` (0.1.0-rc.6).
+ * provider scope declares `webServer` (0.1.0-rc.6). `withConfigure: false`
+ * models a settings service from before 0.1.7, which had `installSection`
+ * instead of `configure`.
  */
-function host({ withWebServer = true, withRegister = true, providerDeclaresWebServer = false } = {}) {
+function host({ withWebServer = true, withRegister = true, providerDeclaresWebServer = false, withConfigure = true } = {}) {
 	const routes = [];
 	const adapters = [];
 	const channelCalls = { register: [], handle: [] };
+	const settingsCalls = { configure: [], describe: 0 };
 	const providerScope = providerDeclaresWebServer ? ["credentials", "webServer"] : ["credentials"];
 	const services = {
 		// Cordis mixes these onto every Context regardless of `inject`.
@@ -89,6 +93,7 @@ function host({ withWebServer = true, withRegister = true, providerDeclaresWebSe
 		effect: (execute) => {
 			execute();
 		},
+		fiber: { uid: "cursor-subscription" },
 		logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
 		llm: { registerAdapter: (names, adapter) => adapters.push({ names, adapter }) },
 		credentials: {
@@ -96,13 +101,25 @@ function host({ withWebServer = true, withRegister = true, providerDeclaresWebSe
 			set: async () => {},
 			unset: async () => {},
 		},
-		settings: { installSection: () => {}, describe: () => [] },
+		settings: {
+			describe: () => {
+				settingsCalls.describe += 1;
+				return [];
+			},
+			update: async () => {},
+		},
 		// Cordis starts the callback once every requested service exists.
 		inject: (dependencies, callback) => {
 			if (dependencies.some((dependency) => services[dependency] === undefined)) return undefined;
 			return callback(strictContext(dependencies, services, `inject(${dependencies.join(",")})`));
 		},
 	};
+	if (withConfigure) {
+		services.settings.configure = (presentation, owner) => {
+			settingsCalls.configure.push({ presentation, owner });
+			return () => {};
+		};
+	}
 
 	/** The real registration body: the owner Context must resolve `webServer`. */
 	const registerRoute = (owner, channel, options) =>
@@ -137,6 +154,7 @@ function host({ withWebServer = true, withRegister = true, providerDeclaresWebSe
 		routes,
 		adapters,
 		channelCalls,
+		settingsCalls,
 	};
 }
 
@@ -148,6 +166,35 @@ test("inject declares the services the provider and account RPC need", () => {
 		!inject.includes("webServer"),
 		"webServer belongs to the channel-mounting Context only: requiring it would keep the Cursor provider out of every profile without a web server",
 	);
+});
+
+test("apply declares the settings page policy through the 0.1.7 API", () => {
+	const { ctx, settingsCalls, adapters } = host();
+
+	apply(ctx, {});
+
+	assert.equal(settingsCalls.configure.length, 1, "the plugin must state its page policy exactly once");
+	assert.deepEqual(
+		settingsCalls.configure[0].presentation,
+		{ auto: false },
+		"the plugin ships its own Settings -> Cursor panel, so DSH must not generate a second form",
+	);
+	assert.equal(
+		settingsCalls.configure[0].owner,
+		ctx.fiber,
+		"the policy is keyed by the plugin's own fiber: DSH matches it against the profile entry",
+	);
+	assert.equal(adapters.length, 1, "the settings policy must not replace the Cursor adapter");
+});
+
+test("apply survives a settings service that predates configure", () => {
+	// DSH 0.1.5-rc.2 exposed installSection instead. The Cursor provider has to
+	// keep loading there: the boot failure this guards against is a hard
+	// TypeError on a removed method, not a missing settings page.
+	const { ctx, adapters } = host({ withConfigure: false });
+
+	assert.doesNotThrow(() => apply(ctx, {}));
+	assert.equal(adapters.length, 1, "the Cursor LLM adapter still registers");
 });
 
 test("apply mounts the loopback account channel through a webServer-declaring owner", () => {
