@@ -58,7 +58,7 @@ Then add `dsh-cursor-subscription` to the `dsh.profile.bundles` array in `packag
 3. Complete sign-in and authorization. The settings page will automatically show that you are signed in.
 4. Select a Cursor model from the model picker, such as `composer-2` or `claude-4-sonnet`.
 
-When a tool is required, the agent converts Cursor's tool request into a local DSH tool execution. The result is returned to the model through the conversation history; Cursor's filesystem tools are not used.
+When a tool is required, the agent converts Cursor's tool request into a local DSH tool execution. The result is returned to the model through the conversation history; Cursor's filesystem tools are not used. When Cursor asks for one of its own built-in tools instead — including a tool newer than this build knows — the plugin declines that request right away, telling the model to use the DSH tools, so the run continues instead of waiting for a result that will never come.
 
 The **Runtime settings** card controls the maximum tool rounds in one Cursor run and the HTTP retry policy. The tool-round cap defaults to `200` (range 1–1000) and ends the run with `TOOL_LIMIT` when exceeded. Retry count means additional attempts and defaults to `0` (disabled). Cursor's streaming POST protocol cannot prove that a failed attempt was not processed remotely, so enabling retries may repeat model work or usage. Retries occur only before any response output when the initial HTTP status matches the configured list.
 

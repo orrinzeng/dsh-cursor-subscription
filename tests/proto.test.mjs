@@ -38,6 +38,9 @@ import {
 	classifyCursorError,
 	encodeMcpResult,
 	encodeSetBlobResult,
+	decodeExecServerMessage,
+	rejectionFor,
+	TOOL_REJECT_REASON,
 	CREDENTIAL_REF,
 	getTokenExpiry,
 	getTokenSub,
@@ -685,6 +688,43 @@ test("the fallback list is sorted by name too", async () => {
 		"o4-mini",
 	]);
 	assert.ok(listed.every((model) => typeof model.name === "string" && model.name.length > 0));
+});
+
+test("an exec this build cannot decode keeps its field number so it can be answered", () => {
+	// Live shape (2026-09-22): id=2, span_context=19, the new exec=36,
+	// and a varint flag=55. Field 19 is a plain non-oneof field, so it must not
+	// be mistaken for the exec — nothing would be answered and the step would
+	// hang until the progress watchdog fired.
+	const bytes = new Writer()
+		.varint(1, 2)
+		.message(19, new Writer().string(1, "35c7dd8e7cc94e59bf2dcdecc5df4a0c").string(2, "68c4679933f05ade").finish())
+		.message(36, new Writer().string(1, "dsh-cursor-subscription").finish())
+		.varint(55, 0)
+		.finish();
+	const exec = decodeExecServerMessage(bytes);
+	assert.deepEqual(exec, { id: 2, execId: "", case: "unknown", field: 36, seen: [1, 19, 36, 55] });
+
+	const reply = rejectionFor(exec);
+	assert.equal(reply.field, 36, "the reply must use the exec's own field number");
+	assert.deepEqual(decodeExecErrorText(reply.payload), TOOL_REJECT_REASON);
+
+	// A message carrying only ids and a span context has no exec to answer.
+	const contextOnly = new Writer().varint(1, 3).message(19, new Writer().string(1, "trace").finish()).finish();
+	const bare = decodeExecServerMessage(contextOnly);
+	assert.equal(bare.field, undefined);
+	assert.equal(rejectionFor(bare), undefined, "an unaddressable exec must not be answered on the span-context field");
+});
+
+test("every outright-rejected exec answers on its own field number", () => {
+	// ExecClientMessage mirrors ExecServerMessage's numbering, which is the
+	// invariant that lets an unknown exec be answered generically. Pin it for
+	// every exec this build decodes but does not implement.
+	for (const field of [2, 3, 4, 5, 7, 8, 9, 14, 16, 17, 18, 20, 21, 22, 23]) {
+		const bytes = new Writer().varint(1, 1).message(field, new Writer().string(1, "D:\\work\\file.txt").string(2, "x").finish()).finish();
+		const exec = decodeExecServerMessage(bytes);
+		assert.notEqual(exec.case, "unknown", `exec field ${field} must decode`);
+		assert.equal(rejectionFor(exec)?.field, field, `exec field ${field} must reply on its own number`);
+	}
 });
 
 test("parseRequestQuotaPerSeat finds the active team", () => {
@@ -1342,6 +1382,136 @@ function encodeAgentMcpArgsFrame({ id, execId, name, toolCallId, toolName, args 
 function encodeAgentCheckpointFrame(checkpoint = new Uint8Array([9, 9, 9])) {
 	return new Writer().message(3, checkpoint).finish();
 }
+
+/** `{ error = 2 { error = 1 } }` — the generic result error this build emits. */
+function decodeExecErrorText(payload) {
+	const reader = new Reader(payload);
+	while (!reader.done) {
+		const { field, wireType } = reader.tag();
+		if (field === 2 && wireType === 2) {
+			const nested = new Reader(reader.bytes());
+			while (!nested.done) {
+				const { field: inner, wireType: innerType } = nested.tag();
+				if (inner === 1 && innerType === 2) return nested.string();
+				nested.skip(innerType);
+			}
+			return undefined;
+		}
+		reader.skip(wireType);
+	}
+	return undefined;
+}
+
+/** AgentClientMessage { exec_client_message = 2 { id=1, exec_id=15, product=… } } */
+function decodeClientExecReply(bytes) {
+	const outer = new Reader(bytes);
+	let execBytes;
+	while (!outer.done) {
+		const { field, wireType } = outer.tag();
+		if (field === 2 && wireType === 2) {
+			execBytes = outer.bytes();
+			break;
+		}
+		outer.skip(wireType);
+	}
+	const reader = new Reader(execBytes);
+	let id = 0;
+	while (!reader.done) {
+		const { field, wireType } = reader.tag();
+		if (field === 1 && wireType === 0) {
+			id = reader.varint();
+			continue;
+		}
+		if (field === 15 && wireType === 2) {
+			reader.string();
+			continue;
+		}
+		if (wireType === 2) return { id, field, payload: reader.bytes() };
+		reader.skip(wireType);
+	}
+	return { id, field: undefined, payload: undefined };
+}
+
+/** ExecServerMessage with an exec variant this build does not decode. */
+function encodeAgentUnknownExecFrame({ id = 2, field = 36, value = "dsh-cursor-subscription" } = {}) {
+	const exec = new Writer()
+		.varint(1, id)
+		.message(19, new Writer().string(1, "35c7dd8e7cc94e59bf2dcdecc5df4a0c").string(2, "68c4679933f05ade").finish())
+		.message(field, new Writer().string(1, value).finish())
+		.varint(55, 0)
+		.finish();
+	return new Writer().message(2, exec).finish();
+}
+
+function encodeAgentTextFrame(text) {
+	return new Writer().message(1, new Writer().message(1, new Writer().string(1, text).finish()).finish()).finish();
+}
+
+function encodeAgentTurnEndedFrame() {
+	return new Writer().message(1, new Writer().message(14, new Uint8Array(0)).finish()).finish();
+}
+
+test("the adapter answers an exec it cannot decode instead of ending the turn", async () => {
+	// Before this, an unknown exec got no reply at all: the server waited for a
+	// result that never came, the progress watchdog fired 60s later, and the
+	// step ended with only the model's preamble — the user saw a turn that
+	// promised work and did nothing.
+	const written = [];
+	const queue = [
+		{ flags: 0, payload: encodeAgentUnknownExecFrame({ id: 2, field: 36 }) },
+		{ flags: 0, payload: encodeAgentTextFrame("改用 MCP 工具读取该文件。") },
+		{ flags: 0, payload: encodeAgentTurnEndedFrame() },
+	];
+	class ReplyRun {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = { next: async () => queue.shift() };
+		}
+		async start() {}
+		writeMessage(bytes) {
+			written.push(Buffer.from(bytes));
+			return true;
+		}
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const run = new ReplyRun();
+	const warnings = [];
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => run,
+		logger: { warn: (message) => warnings.push(message) },
+	});
+	const chunks = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "unknown-exec",
+		tools: [{ name: "read", description: "read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }],
+		messages: [{ role: "user", content: [{ type: "text", text: "read package.json" }] }],
+	})) chunks.push(chunk);
+
+	// The first write is the run request itself; the reply is the exec message.
+	const replies = written.map(decodeClientExecReply).filter((reply) => reply.field === 36);
+	assert.equal(replies.length, 1, "the unknown exec must be answered exactly once");
+	assert.equal(replies[0].id, 2);
+	assert.equal(decodeExecErrorText(replies[0].payload), TOOL_REJECT_REASON);
+	assert.ok(
+		warnings.some((message) => message.includes("exec this build does not know")),
+		"the operator must see that Cursor sent an unknown tool",
+	);
+	assert.equal(
+		chunks.filter((chunk) => chunk.type === "text-delta").map((chunk) => chunk.text).join(""),
+		"改用 MCP 工具读取该文件。",
+		"the run must keep streaming after the rejection",
+	);
+	assert.deepEqual(chunks.at(-1).reason, { kind: "stop" });
+});
 
 test("parallel MCP tool calls keep distinct DSH block indexes and resume without phantom results", async () => {
 	const tools = [
