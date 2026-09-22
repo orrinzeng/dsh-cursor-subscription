@@ -14,7 +14,7 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - Stream conversations with reasoning output, image attachments, and DSH tool calls.
 - View sign-in status and token expiration in the settings page, which labels itself with the installed build version.
 - View and manually refresh subscription usage as Cursor's own dashboard lays it out: an included-usage table with the Cursor Models and Other Models pools, each followed by the models that drew on it, with token counts and percentages per row, plus included requests, on-demand spend, and the billing cycle.
-- View and manually refresh the models available to the current account.
+- View and manually refresh the models available to the current account, listed by name instead of Cursor's response order.
 - Configure the per-run tool-round limit and HTTP retry count, interval, and status codes from the settings page.
 - Read the settings page in Simplified Chinese, English, Traditional Chinese, Japanese, Korean, Spanish, French, German, Italian, Brazilian Portuguese, Russian, or Arabic. The panel mirrors itself for Arabic; contributed languages join DSH's own language picker under **Settings → General → Language** and fall back to English outside the panel.
 

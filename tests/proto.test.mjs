@@ -49,6 +49,7 @@ import {
 	parseModelUsage,
 	usagePools,
 	usageModelPool,
+	sortModelsByName,
 	parseRequestQuotaPerSeat,
 	resolveCursorSettings,
 	shouldRetryHttpStatus,
@@ -607,6 +608,83 @@ test("usagePools keeps the reported percentages when the model list is unavailab
 		{ auto: { pct: 0, tokens: 0 }, api: { tokens: 120 } },
 		"a pool with tokens but no reported percentage still renders",
 	);
+});
+
+test("sortModelsByName orders the picker list by name", () => {
+	// GetUsableModels answers newest-family-first, which is not an order a
+	// picker should show; the list is sorted by display name instead.
+	const listed = sortModelsByName([
+		{ id: "gpt-5.1-codex", name: "GPT-5.1 Codex" },
+		{ id: "composer-2", name: "Composer 2" },
+		{ id: "claude-4.6-opus-high", name: "Claude 4.6 Opus" },
+		{ id: "gpt-10", name: "GPT-10" },
+		{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+		{ id: "gpt-5", name: "GPT-5" },
+	]);
+	assert.deepEqual(
+		listed.map((model) => model.id),
+		["claude-4.6-opus-high", "composer-2", "gemini-2.5-pro", "gpt-5", "gpt-5.1-codex", "gpt-10"],
+		"names sort case-insensitively with numbers in natural order",
+	);
+	// The caller's array keeps its order, so a cached list is never reordered
+	// under a caller that is holding it.
+	const source = [{ id: "b", name: "Beta" }, { id: "a", name: "Alpha" }];
+	sortModelsByName(source);
+	assert.deepEqual(source.map((model) => model.id), ["b", "a"]);
+});
+
+test("sortModelsByName falls back to the id for equal names", () => {
+	assert.deepEqual(
+		sortModelsByName([
+			{ id: "same-b", name: "Same" },
+			{ id: "same-a", name: "Same" },
+		]).map((model) => model.id),
+		["same-a", "same-b"],
+	);
+});
+
+test("the adapter sorts both the picker list and the RPC list", async () => {
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "token" },
+		fetchModels: async () => [
+			{ id: "gpt-5", name: "GPT-5" },
+			{ id: "composer-2", name: "Composer 2" },
+			{ id: "claude-4.6-opus-high", name: "Claude 4.6 Opus" },
+		],
+		fallbackModels: [],
+	});
+	assert.deepEqual(
+		(await adapter.listModels("cursor-subscription")).map((model) => model.id),
+		["claude-4.6-opus-high", "composer-2", "gpt-5"],
+	);
+	assert.deepEqual(
+		(await adapter.listModelsForRpc()).map((model) => model.id),
+		["claude-4.6-opus-high", "composer-2", "gpt-5"],
+		"the settings list reads the same cache and keeps the same order",
+	);
+});
+
+test("the fallback list is sorted by name too", async () => {
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "token" },
+		fetchModels: async () => {
+			throw new Error("offline");
+		},
+	});
+	const listed = await adapter.listModels("cursor-subscription");
+	assert.deepEqual(listed.map((model) => model.id), [
+		"claude-3.5-sonnet",
+		"claude-4-sonnet",
+		"claude-sonnet-4",
+		"composer-2",
+		"cursor-small",
+		"gemini-2.5-pro",
+		"gpt-4.1",
+		"gpt-4o",
+		"o3",
+		"o4-mini",
+	]);
+	assert.ok(listed.every((model) => typeof model.name === "string" && model.name.length > 0));
 });
 
 test("parseRequestQuotaPerSeat finds the active team", () => {
