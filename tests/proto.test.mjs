@@ -1808,11 +1808,13 @@ test("a sandbox refusal carries the escalation rule back to the model", async ()
 	const tools = [
 		{ name: "write", description: "write a file", parameters: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path"] } },
 		{ name: "read", description: "read a file", parameters: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] } },
+		{ name: "glob", description: "list files", parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } },
 	];
 	const written = [];
 	const queue = [
 		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 1, execId: "exec-write", name: "write", toolCallId: "tool-write", toolName: "write", args: { file_path: "D:/outside/notes.md", content: "x" } }) },
 		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 2, execId: "exec-read", name: "read", toolCallId: "tool-read", toolName: "read", args: { file_path: "D:/outside/notes.md" } }) },
+		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 3, execId: "exec-glob", name: "glob", toolCallId: "tool-glob", toolName: "glob", args: { pattern: "**/*.md" } }) },
 		{ flags: 0, payload: encodeAgentCheckpointFrame() },
 	];
 	class SandboxRun {
@@ -1844,7 +1846,7 @@ test("a sandbox refusal carries the escalation rule back to the model", async ()
 		messages: [{ role: "user", content: [{ type: "text", text: "write outside the workspace" }] }],
 	})) first.push(chunk);
 	const calls = first.filter((chunk) => chunk.type === "block-end" && chunk.block?.type === "tool-call").map((chunk) => chunk.block);
-	assert.equal(calls.length, 2, "both DSH tool calls must reach the agent loop");
+	assert.equal(calls.length, 3, "every DSH tool call must reach the agent loop");
 
 	written.length = 0;
 	const second = [];
@@ -1862,12 +1864,18 @@ test("a sandbox refusal carries the escalation rule back to the model", async ()
 					{
 						type: "tool-result",
 						toolCallId: calls[0].id,
+						content: [{ type: "text", text: "Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(D:\\myworks\\bao-xian-crm\\v2)" }],
+						isError: false,
+					},
+					{
+						type: "tool-result",
+						toolCallId: calls[1].id,
 						content: [{ type: "text", text: "[sandbox: file access denied under workspace-write mode] — a policy denial, not a bug in the command" }],
 						isError: true,
 					},
 					{
 						type: "tool-result",
-						toolCallId: calls[1].id,
+						toolCallId: calls[2].id,
 						content: [{ type: "text", text: "(no output)" }],
 						isError: false,
 					},
@@ -1879,14 +1887,24 @@ test("a sandbox refusal carries the escalation rule back to the model", async ()
 	const carried = written.map((buf) => buf.toString("utf8")).join("");
 	assert.equal(
 		carried.split("sandbox_permissions").length - 1,
-		1,
-		"only the refused result may ask for an escalation",
+		2,
+		"each refusing result asks for an escalation exactly once, and a normal result asks for none",
 	);
 	assert.ok(carried.includes("justification"), "an escalation needs a justification to reach the approval prompt");
-	assert.ok(carried.includes("danger-full-access"), "the hint must name the wider modes");
 	assert.ok(
-		second.some((chunk) => chunk.type === "reasoning-delta" && chunk.index === PROGRESS_BLOCK_INDEX && chunk.text.includes("refused a tool call")),
-		"the reader must see that a refusal happened and was answered",
+		carried.includes('sandbox_permissions="danger-full-access"'),
+		"an ACL failure must name the mode that can actually start",
+	);
+	assert.ok(
+		carried.includes("Do not retry it in a narrower mode"),
+		"and must forbid the narrower retry that looped 101 times in one session",
+	);
+	assert.ok(carried.includes("narrowest wider mode"), "a policy refusal still offers the narrower mode first");
+	assert.ok(carried.includes("stop and report"), "neither refusal may invite an unbounded retry loop");
+	assert.equal(
+		second.filter((chunk) => chunk.type === "reasoning-delta" && chunk.index === PROGRESS_BLOCK_INDEX && chunk.text.includes("refused a tool call")).length,
+		2,
+		"the reader must see each refusal that was answered",
 	);
 });
 
