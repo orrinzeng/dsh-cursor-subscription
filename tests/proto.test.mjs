@@ -27,6 +27,8 @@ import {
 	buildInitialConversationState,
 	buildRunPayload,
 	decodeAgentServerMessage,
+	decodeInteractionUpdate,
+	PROGRESS_BLOCK_INDEX,
 	decodeKvServerMessage,
 	decodeMcpArgs,
 	decodeUsableModels,
@@ -1520,6 +1522,101 @@ test("the adapter reports a step's token total instead of the last delta", async
 	);
 });
 
+test("thinking completion reports the duration Cursor measured", () => {
+	// InteractionUpdate { thinking_completed = 5 { thinking_duration_ms = 1 } }
+	const bytes = new Writer().message(5, new Writer().varint(1, 4200).finish()).finish();
+	assert.deepEqual(decodeInteractionUpdate(bytes), { type: "thinkingCompleted", durationMs: 4200 });
+});
+
+test("protocol work the transcript would hide is reported as progress", async () => {
+	// A Cursor step otherwise reduces to one sentence plus a tool card: the
+	// native tool call the model tries first, the tool-schema fetch it makes
+	// next, and the DSH tool it finally calls were all invisible, so a turn of
+	// them read as the same request being submitted again and again.
+	const tools = [
+		{ name: "grep", description: "search files", parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } },
+	];
+	const written = [];
+	const queue = [
+		{ flags: 0, payload: encodeAgentThinkingFrame("weighing the options") },
+		{ flags: 0, payload: encodeAgentThinkingCompletedFrame(4200) },
+		{ flags: 0, payload: encodeAgentNativeGrepExecFrame() },
+		{ flags: 0, payload: encodeAgentRequestContextExecFrame() },
+		{ flags: 0, payload: encodeAgentTextFrame("改用 MCP 工具。") },
+		{ flags: 0, payload: encodeAgentCheckpointFrame() },
+		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 4, execId: "exec-mcp", name: "grep", toolCallId: "tool-1", toolName: "grep", args: { pattern: "x" } }) },
+	];
+	const paused = { value: false };
+	class ProgressRun {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = {
+				next: async () => {
+					const frame = queue.shift();
+					if (frame !== undefined) return frame;
+					if (paused.value) return undefined;
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					return { flags: 0, payload: encodeAgentHeartbeatFrame() };
+				},
+				pause: () => { paused.value = true; },
+				resume: () => { paused.value = false; },
+				finish: () => { paused.value = true; },
+			};
+		}
+		async start() {}
+		writeMessage(bytes) { written.push(Buffer.from(bytes)); return true; }
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => new ProgressRun(),
+		toolCallSettleMs: 40,
+		progressTimeoutMs: 5000,
+		idleCheckIntervalMs: 25,
+		hangTracePath: join(tmpdir(), `cursor-hang-${process.pid}-progress.log`),
+	});
+	const chunks = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "progress-notes",
+		tools,
+		messages: [{ role: "user", content: [{ type: "text", text: "find it" }] }],
+	})) chunks.push(chunk);
+
+	const progress = chunks.filter((chunk) => chunk.type === "reasoning-delta" && chunk.index === PROGRESS_BLOCK_INDEX);
+	assert.deepEqual(
+		progress.map((chunk) => chunk.text),
+		[
+			"[cursor] thinking finished after 4.2s\n",
+			"[cursor] native grep call declined; using the DSH tools instead\n",
+			"[cursor] loaded the DSH tool schemas (1 tools)\n",
+			"[cursor] calling the DSH tool grep\n",
+		],
+		"every protocol step a reader cannot otherwise see must be reported in order",
+	);
+	assert.ok(
+		progress.every((chunk) => chunk.text.startsWith("[cursor] ")),
+		"progress lines stay distinguishable from the model's own words",
+	);
+	assert.equal(
+		chunks.filter((chunk) => chunk.type === "reasoning-delta" && chunk.index === 1).map((chunk) => chunk.text).join(""),
+		"weighing the options",
+		"the model's own thinking keeps its own block",
+	);
+	assert.deepEqual(
+		chunks.filter((chunk) => chunk.type === "block-end" && chunk.block?.type === "tool-call").map((chunk) => chunk.block.name),
+		["grep"],
+		"the DSH tool call still reaches the agent loop as a real call",
+	);
+});
+
 function encodeAgentMcpArgsFrame({ id, execId, name, toolCallId, toolName, args = {} }) {
 	const mcp = new Writer();
 	mcp.string(1, name);
@@ -1538,6 +1635,33 @@ function encodeAgentMcpArgsFrame({ id, execId, name, toolCallId, toolName, args 
 
 function encodeAgentCheckpointFrame(checkpoint = new Uint8Array([9, 9, 9])) {
 	return new Writer().message(3, checkpoint).finish();
+}
+
+/** InteractionUpdate { thinking_delta = 4 { text = 1 } } */
+function encodeAgentThinkingFrame(text) {
+	return new Writer().message(1, new Writer().message(4, new Writer().string(1, text).finish()).finish()).finish();
+}
+
+/** InteractionUpdate { thinking_completed = 5 { thinking_duration_ms = 1 } } */
+function encodeAgentThinkingCompletedFrame(durationMs) {
+	return new Writer().message(1, new Writer().message(5, new Writer().varint(1, durationMs).finish()).finish()).finish();
+}
+
+/** ExecServerMessage { id=1, exec_id=15, grep_args=5 } — a native call this build declines. */
+function encodeAgentNativeGrepExecFrame({ id = 2, execId = "exec-grep" } = {}) {
+	const exec = new Writer().varint(1, id).string(15, execId).bytes(5, new Uint8Array(0)).finish();
+	return new Writer().message(2, exec).finish();
+}
+
+/** ExecServerMessage { id=1, exec_id=15, request_context_args=10 } */
+function encodeAgentRequestContextExecFrame({ id = 3, execId = "exec-ctx" } = {}) {
+	const exec = new Writer().varint(1, id).string(15, execId).bytes(10, new Uint8Array(0)).finish();
+	return new Writer().message(2, exec).finish();
+}
+
+/** InteractionUpdate { heartbeat = 13 } */
+function encodeAgentHeartbeatFrame() {
+	return new Writer().message(1, new Writer().message(13, new Uint8Array(0)).finish()).finish();
 }
 
 /** `{ error = 2 { error = 1 } }` — the generic result error this build emits. */
@@ -1673,6 +1797,97 @@ test("the adapter answers an exec it cannot decode instead of ending the turn", 
 		"the run must keep streaming after the rejection",
 	);
 	assert.deepEqual(chunks.at(-1).reason, { kind: "stop" });
+});
+
+test("a sandbox refusal carries the escalation rule back to the model", async () => {
+	// DSH gives every provider the rule — retry the denied call once with
+	// `sandbox_permissions` plus a justification, which raises an approval
+	// prompt — but only the `pwsh` description spells it out, and the refusal
+	// result itself carries nothing. Without the reminder a Cursor turn reads the
+	// refusal as "local tools do not work here" and stops asking for permission.
+	const tools = [
+		{ name: "write", description: "write a file", parameters: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path"] } },
+		{ name: "read", description: "read a file", parameters: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] } },
+	];
+	const written = [];
+	const queue = [
+		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 1, execId: "exec-write", name: "write", toolCallId: "tool-write", toolName: "write", args: { file_path: "D:/outside/notes.md", content: "x" } }) },
+		{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 2, execId: "exec-read", name: "read", toolCallId: "tool-read", toolName: "read", args: { file_path: "D:/outside/notes.md" } }) },
+		{ flags: 0, payload: encodeAgentCheckpointFrame() },
+	];
+	class SandboxRun {
+		constructor() {
+			this.finished = false;
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = { next: async () => queue.shift() };
+		}
+		async start() {}
+		writeMessage(bytes) { written.push(Buffer.from(bytes)); return true; }
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.finished = true; this.stream.destroyed = true; }
+	}
+	const run = new SandboxRun();
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings(),
+		createAgentRun: () => run,
+	});
+	const first = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "sandbox-escalation",
+		tools,
+		messages: [{ role: "user", content: [{ type: "text", text: "write outside the workspace" }] }],
+	})) first.push(chunk);
+	const calls = first.filter((chunk) => chunk.type === "block-end" && chunk.block?.type === "tool-call").map((chunk) => chunk.block);
+	assert.equal(calls.length, 2, "both DSH tool calls must reach the agent loop");
+
+	written.length = 0;
+	const second = [];
+	for await (const chunk of adapter.stream({
+		provider: "cursor-subscription",
+		model: "test-model",
+		sessionId: "sandbox-escalation",
+		tools,
+		messages: [
+			{ role: "user", content: [{ type: "text", text: "write outside the workspace" }] },
+			{ role: "assistant", content: calls.map((call) => ({ type: "tool-call", id: call.id, name: call.name, arguments: call.arguments })) },
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: calls[0].id,
+						content: [{ type: "text", text: "[sandbox: file access denied under workspace-write mode] — a policy denial, not a bug in the command" }],
+						isError: true,
+					},
+					{
+						type: "tool-result",
+						toolCallId: calls[1].id,
+						content: [{ type: "text", text: "(no output)" }],
+						isError: false,
+					},
+				],
+			},
+		],
+	})) second.push(chunk);
+
+	const carried = written.map((buf) => buf.toString("utf8")).join("");
+	assert.equal(
+		carried.split("sandbox_permissions").length - 1,
+		1,
+		"only the refused result may ask for an escalation",
+	);
+	assert.ok(carried.includes("justification"), "an escalation needs a justification to reach the approval prompt");
+	assert.ok(carried.includes("danger-full-access"), "the hint must name the wider modes");
+	assert.ok(
+		second.some((chunk) => chunk.type === "reasoning-delta" && chunk.index === PROGRESS_BLOCK_INDEX && chunk.text.includes("refused a tool call")),
+		"the reader must see that a refusal happened and was answered",
+	);
 });
 
 test("parallel MCP tool calls keep distinct DSH block indexes and resume without phantom results", async () => {
