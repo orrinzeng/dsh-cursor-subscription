@@ -50,13 +50,28 @@ session, first to `workspace-write` (refused by the ACL grant above) and then to
 
 `withSandboxHint()` now appends the rule to a refusal, in both places a result
 travels back to the model — the live-bridge `mcp_result` and the cold-start
-history replay — and never twice:
+history replay. The two refusal families read differently, because they call for
+different answers. A policy refusal keeps the narrowest-first rule:
 
 ```text
 [cursor] The DSH sandbox refused this call, and that is recoverable: retry this
 exact call once with sandbox_permissions set to the narrowest wider mode that
 suffices (workspace-write, or danger-full-access when that is not enough) plus a
-one-sentence justification. DSH then asks the user to approve it.
+one-sentence justification. DSH then asks the user to approve it. If the retry is
+refused as well, stop and report it instead of trying another mode.
+```
+
+An ACL failure says plainly that no narrower mode can work, because naming one
+first is what turned a single refusal into a retry loop — in one session a turn
+asked for `workspace-write`, the mode it was already in, 101 times:
+
+```text
+[cursor] The DSH sandbox cannot start in this workspace — its own ACL grant fails
+(`SetNamedSecurityInfoW`) — so no narrower mode can succeed. Retry this exact call
+once with sandbox_permissions="danger-full-access" and a one-sentence
+justification; DSH then asks the user to approve it. Do not retry it in a
+narrower mode, and if the retry is refused, stop and report the refusal instead
+of trying again.
 ```
 
 The reader gets a line too: `[cursor] the sandbox refused a tool call; told the
@@ -67,15 +82,20 @@ model how to ask for approval`.
 - **Unit:** 99 host-side tests pass. New cases: the four progress lines arrive in
   order, keep their `[cursor] ` prefix, leave the model's own thinking on its own
   block, and still hand the agent loop a real tool call; `thinking_completed`
-  decodes to the duration Cursor reported; and with two results in flight — one
-  refused, one normal — the escalation rule is appended exactly once, names both
-  wider modes, and the reader's line is emitted.
+  decodes to the duration Cursor reported; and with three results in flight — an
+  ACL failure, a policy refusal and an ordinary result — each refusal is answered
+  exactly once, the ACL failure names `danger-full-access` and forbids the
+  narrower retry, the policy refusal keeps the narrowest-first rule, neither
+  invites an unbounded loop, and the reader's line is emitted per refusal.
 - **What Cursor actually receives, read back from a live session:** the `pwsh`
   description is 3,156 characters and states the escalation rule; `write`, `edit`
   and `read` are 42, 59 and 56 characters with no wording about it; the assembled
   system prompt is 7,816 characters with no mention of the sandbox or approvals.
 - **What a refusal looks like today, read from the same session:** the result
   carried only the ACL error above, which is the text the hint now follows.
+- **The loop this release ends, read from a `D:` session:** 101 ACL failures and
+  49 escalations in one transcript, with a turn spending 80 tool calls on the
+  same `workspace-write` retry until the user aborted it.
 
 ## Install or upgrade
 
