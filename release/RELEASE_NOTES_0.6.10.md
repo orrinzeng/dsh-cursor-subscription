@@ -77,9 +77,28 @@ of trying again.
 The reader gets a line too: `[cursor] the sandbox refused a tool call; told the
 model how to ask for approval`.
 
+## A replay keeps what each request asked for
+
+A cold start — a process restart, a lost bridge, or the rebuild that follows a
+compaction — replays the DSH history as text, and a tool request used to replay
+as `[Previous tool request: todo_write]` and nothing else. For a plan the request
+*is* its argument, so the model came back without the list it had just written
+and re-derived one; the same gap hides the search it already ran, which is how a
+turn re-issues a call it has already made. Each replayed request now keeps its
+arguments up to 600 characters: a plan survives whole, a whole-file `write` stays
+bounded.
+
+The churn this addresses, measured on one session: 15 `todo_write` calls, none
+identical to the one before it, with a turn that rewrote the same three-item plan
+in three consecutive steps while its first item stayed `in_progress` — and one
+rewrite that came out in English. Plan churn is mostly a symptom of a turn that is
+stuck: the plan tool replaces the entire list on every call and answers with a
+count rather than the list, so any edit is a retype, and an agent that cannot make
+progress edits the one thing it still controls.
+
 ## Verification
 
-- **Unit:** 99 host-side tests pass. New cases: the four progress lines arrive in
+- **Unit:** 100 host-side tests pass. New cases: the four progress lines arrive in
   order, keep their `[cursor] ` prefix, leave the model's own thinking on its own
   block, and still hand the agent loop a real tool call; `thinking_completed`
   decodes to the duration Cursor reported; and with three results in flight — an
@@ -87,6 +106,9 @@ model how to ask for approval`.
   exactly once, the ACL failure names `danger-full-access` and forbids the
   narrower retry, the policy refusal keeps the narrowest-first rule, neither
   invites an unbounded loop, and the reader's line is emitted per refusal.
+- **The replay case:** a cold-start action text keeps a `todo_write` request and
+  the list it carried, keeps the result that answered it, and truncates a `write`
+  whose body is 5,000 characters instead of replaying it.
 - **What Cursor actually receives, read back from a live session:** the `pwsh`
   description is 3,156 characters and states the escalation rule; `write`, `edit`
   and `read` are 42, 59 and 56 characters with no wording about it; the assembled
