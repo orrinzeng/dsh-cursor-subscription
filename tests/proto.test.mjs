@@ -216,6 +216,62 @@ test("cold-start run payload combines the DSH human prompt and runtime context",
 	assert.ok(text.indexOf("human prompt") < text.indexOf("runtime snapshot"));
 });
 
+test("a cold-start replay keeps what each tool request asked for", () => {
+	// The replay kept only the tool name, so a model that came back through a
+	// restart, a lost bridge or a compaction could not recall the plan it wrote
+	// or the search it had already run, and re-derived both — reworded, which is
+	// what plan churn looks like.
+	const plan = JSON.stringify({
+		todos: [
+			{ content: "定位粘贴后失焦丢值的输入框", status: "completed" },
+			{ content: "修复失焦回写覆盖粘贴内容", status: "in_progress" },
+		],
+	});
+	const body = "x".repeat(5000);
+	const built = buildRunPayload({
+		system: "sys",
+		messages: [
+			{ role: "user", content: [{ type: "text", text: "fix paste" }] },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "planning" },
+					{ type: "tool-call", id: "call-1", name: "todo_write", arguments: plan },
+					{ type: "tool-call", id: "call-2", name: "write", arguments: JSON.stringify({ file_path: "a.ts", content: body }) },
+				],
+			},
+			{
+				role: "user",
+				content: [{ type: "tool-result", toolCallId: "call-1", content: [{ type: "text", text: "Updated todo list: 0 pending, 1 in progress, 1 completed." }], isError: false }],
+			},
+		],
+	}, "default");
+
+	const envelope = new Reader(built.payload);
+	envelope.tag();
+	const request = new Reader(envelope.bytes());
+	request.tag();
+	const state = new Reader(request.bytes());
+	while (!state.done) {
+		const tag = state.tag();
+		state.skip(tag.wireType);
+	}
+	request.tag();
+	const action = new Reader(request.bytes());
+	action.tag();
+	const userAction = new Reader(action.bytes());
+	userAction.tag();
+	const userMessage = new Reader(userAction.bytes());
+	userMessage.tag();
+	const text = userMessage.string();
+
+	assert.ok(text.includes("[Previous tool request: todo_write"), "the plan request must survive the replay");
+	assert.ok(text.includes("修复失焦回写覆盖粘贴内容"), "with the plan itself, not just the tool name");
+	assert.ok(text.includes("Updated todo list"), "and the result that answered it");
+	assert.ok(text.includes("…"), "a whole-file write stays bounded");
+	assert.ok(!text.includes(body), "and does not replay the file body");
+});
+
 test("buildRunPayload produces a run request without throwing", () => {
 	const options = {
 		system: "sys",
