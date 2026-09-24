@@ -220,3 +220,42 @@ test("the client plugin injects the locale service", async () => {
 	assert.ok(module.inject.includes("locale"), "the panel reads copy through ctx.locale");
 	assert.ok(module.inject.includes("slots"), "the panel registers a settings section");
 });
+
+test("the panel draws a checkbox as a switch row, never as a text box", async () => {
+	// The runtime-settings grid paints every input as a full-width, 34px-tall,
+	// bordered text field. Applied to a checkbox that produced a tall empty frame
+	// around a small box, with the label stacked above it — so the shared rule has
+	// to skip checkboxes, and the checkbox needs a row of its own.
+	const { style } = await boot();
+	assert.ok(
+		!/\.cursorSubscriptionField input\{/.test(style),
+		"the shared field rule must not paint a checkbox as a text box",
+	);
+	assert.match(
+		style,
+		/\.cursorSubscriptionField input:not\(\[type="checkbox"\]\)\{[^}]*width:100%/,
+		"text and number fields keep their full-width box",
+	);
+	assert.match(
+		style,
+		/\.cursorSubscriptionCheckboxRow\{[^}]*display:flex[^}]*align-items:center/,
+		"the box and its label share one centred row",
+	);
+	assert.match(
+		style,
+		/\.cursorSubscriptionCheckboxRow input\[type="checkbox"\]\{[^}]*width:16px[^}]*height:16px/,
+		"the checkbox sizes itself instead of filling the grid column",
+	);
+	assert.match(
+		style,
+		/\.cursorSubscriptionFieldCheckbox \.cursorSubscriptionFieldHint\{[^}]*padding-inline-start/,
+		"the explanation aligns under the label, mirrored in right-to-left locales",
+	);
+
+	const source = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
+	const row = source.indexOf('className: "cursorSubscriptionCheckboxRow"');
+	assert.ok(row > 0, "the checkbox row must exist in the markup");
+	const box = source.indexOf("type: \"checkbox\"", row);
+	const label = source.indexOf("jsx(\"label\"", row);
+	assert.ok(box > row && label > box, "inside the row the box comes before its label");
+});
