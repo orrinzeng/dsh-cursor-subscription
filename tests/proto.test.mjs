@@ -1435,6 +1435,7 @@ test("Cursor settings RPC reads and updates only public runtime fields", async (
 	const read = await handler("settings", {}, signal);
 	assert.equal(read.ok, true);
 	assert.equal(read.value.maxToolRounds, 200);
+	assert.equal(read.value.replayHistoryEachStep, false);
 	assert.equal(read.value.revision, 4);
 	const updated = await handler("settings/update", {
 		revision: 4,
@@ -1442,6 +1443,7 @@ test("Cursor settings RPC reads and updates only public runtime fields", async (
 		retryCount: 1,
 		retryIntervalMs: 10,
 		retryHttpStatusCodes: [429, 503],
+		replayHistoryEachStep: true,
 		accessToken: "must-not-pass-through",
 	}, signal);
 	assert.equal(updated.ok, true);
@@ -1450,6 +1452,7 @@ test("Cursor settings RPC reads and updates only public runtime fields", async (
 		retryCount: 1,
 		retryIntervalMs: 10,
 		retryHttpStatusCodes: [429, 503],
+		replayHistoryEachStep: true,
 		revision: 5,
 	});
 });
@@ -1531,6 +1534,77 @@ test("a Cursor checkpoint captured before DSH compaction is not reused", async (
 	assert.ok(
 		compacted.written.map((bytes) => bytes.toString("utf8")).join("").includes(COLD_START),
 		"a compacted history is rebuilt from what DSH kept instead of the stale checkpoint",
+	);
+});
+
+test("replaying the full history each step rebuilds the run instead of resuming it", async () => {
+	// A transport that re-sends its own message history hands the model the same
+	// explicit history at every step. Delegating that history to Cursor's server
+	// instead is what a Cursor turn was observed to re-derive from — restating its
+	// goal, re-reading its goal and rewriting its plan while its tool calls kept
+	// succeeding. The rebuild is opt-in, because it re-sends the whole transcript
+	// each step and Cursor has no provider-side compaction to bound it.
+	const tools = [{ name: "grep", description: "search files", parameters: { type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] } }];
+	const runs = [];
+	const queues = [
+		[
+			{ flags: 0, payload: encodeAgentMcpArgsFrame({ id: 1, execId: "exec-grep", name: "grep", toolCallId: "tool-grep", toolName: "grep", args: { pattern: "TODO" } }) },
+			{ flags: 0, payload: encodeAgentCheckpointFrame() },
+		],
+		[{ flags: 0, payload: encodeAgentTurnEndedFrame() }],
+	];
+	class Run {
+		constructor() {
+			this.queue = queues.shift() ?? [];
+			this.finished = false;
+			this.closed = false;
+			this.written = [];
+			this.stream = { destroyed: false };
+			this.responseContentType = "application/connect+proto";
+			this.frames = { next: async () => this.queue.shift(), pause: () => {}, resume: () => {}, finish: () => {} };
+		}
+		async start() {}
+		writeMessage(bytes) {
+			this.written.push(Buffer.from(bytes));
+			return true;
+		}
+		async waitForResponse() { return 200; }
+		startHeartbeat() {}
+		abort() { this.close(); }
+		close() { this.closed = true; this.finished = true; this.stream.destroyed = true; }
+	}
+	const adapter = new CursorAdapter({
+		auth: { accessToken: async () => "test-token" },
+		settings: () => resolveCursorSettings({ replayHistoryEachStep: true }),
+		createAgentRun: () => {
+			const run = new Run();
+			runs.push(run);
+			return run;
+		},
+	});
+	const drive = async (messages) => {
+		const chunks = [];
+		for await (const chunk of adapter.stream({ provider: "cursor-subscription", model: "test-model", sessionId: "replay-each-step", tools, messages })) chunks.push(chunk);
+		return chunks;
+	};
+	const first = await drive([{ role: "user", content: [{ type: "text", text: "look for TODOs" }] }]);
+	const call = first.find((chunk) => chunk.type === "block-end" && chunk.block?.type === "tool-call")?.block;
+	assert.ok(call, "the DSH tool call must reach the agent loop");
+	assert.equal(runs.length, 1);
+
+	await drive([
+		{ role: "user", content: [{ type: "text", text: "look for TODOs" }] },
+		{ role: "assistant", content: [{ type: "tool-call", id: call.id, name: call.name, arguments: call.arguments }] },
+		{ role: "user", content: [{ type: "tool-result", toolCallId: call.id, content: [{ type: "text", text: "Found 2 matches" }], isError: false }] },
+	]);
+	assert.equal(runs.length, 2, "the step must start a fresh run instead of resuming the bridge");
+	assert.equal(runs[0].closed, true, "the bridge the step does not resume must be released");
+	const payload = runs[1].written.map((bytes) => bytes.toString("utf8")).join("");
+	assert.ok(payload.includes("Continue the DSH conversation below."), "the fresh run carries DSH's history");
+	assert.ok(payload.includes("Found 2 matches"), "including the result the step just produced");
+	assert.ok(
+		!runs[1].written.some((bytes) => bytes.includes(Buffer.from("Tool result not provided"))),
+		"a rebuild must not also answer the exec it abandoned",
 	);
 });
 
