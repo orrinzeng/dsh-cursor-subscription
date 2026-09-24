@@ -96,9 +96,32 @@ stuck: the plan tool replaces the entire list on every call and answers with a
 count rather than the list, so any edit is a retype, and an agent that cannot make
 progress edits the one thing it still controls.
 
+## An opt-in rebuild that re-sends the history each step
+
+`dsh-codex-subscription` and this plugin differ in one structural way, and it is
+the reason a Codex model plowed through 114 steps of a session that stalled a
+Cursor model: the Codex plugin speaks standard function calling, so its adapter
+assembles the message history itself and every request carries it, while this
+adapter delegates history to Cursor's server and sends deltas. The tool surface
+follows from that: the Codex model only ever sees DSH's tools, while this one is
+also offered Cursor's own, which have to be refused.
+
+**Replay the full history each step** (Settings → Cursor, off by default) makes
+every step rebuild the conversation from the DSH history instead of resuming the
+conversation Cursor keeps, so the model sees the same explicit history a
+function-calling adapter gives it. It is opt-in because Cursor has no
+provider-side compaction: the whole transcript is re-sent each step, so tokens
+grow with the step count.
+
+The turn that motivated it carried `get_goal` four times, `todo_write` twice and
+a re-stated goal in every step's text, while the `grep`, `glob` and `read` calls
+in those same steps all returned real data — and **no native tool was attempted
+at all** (0 mid-message round trips across 24 steps), which rules out the
+refused-tool path as the cause.
+
 ## Verification
 
-- **Unit:** 100 host-side tests pass. New cases: the four progress lines arrive in
+- **Unit:** 101 host-side tests pass. New cases: the four progress lines arrive in
   order, keep their `[cursor] ` prefix, leave the model's own thinking on its own
   block, and still hand the agent loop a real tool call; `thinking_completed`
   decodes to the duration Cursor reported; and with three results in flight — an
@@ -109,6 +132,10 @@ progress edits the one thing it still controls.
 - **The replay case:** a cold-start action text keeps a `todo_write` request and
   the list it carried, keeps the result that answered it, and truncates a `write`
   whose body is 5,000 characters instead of replaying it.
+- **The rebuild case:** with the switch on, a step whose tool result is in hand
+  starts a fresh run, releases the bridge it does not resume, carries DSH's
+  history and that result into the new run, and answers no abandoned exec; the
+  settings RPC round-trip now covers the field and still drops an unknown key.
 - **What Cursor actually receives, read back from a live session:** the `pwsh`
   description is 3,156 characters and states the escalation rule; `write`, `edit`
   and `read` are 42, 59 and 56 characters with no wording about it; the assembled
@@ -143,5 +170,9 @@ Restart DSH manually afterwards and check that **Settings → Cursor** shows
 - On a `D:` workspace the `workspace-write` sandbox cannot grant its own ACL
   (`SetNamedSecurityInfoW failed (Win32 5)`), which is why the hint names
   `danger-full-access` as the mode that suffices when a narrower one does not.
+- The rebuild switch trades tokens for explicitness: with it on, a step's prompt
+  grows with the whole transcript, and nothing on Cursor's side compacts it. It
+  changes no other behaviour — the same tool calls, the same permissions, and
+  the server-side conversation is simply not resumed.
 - No new endpoints and no settings change: the run stream, the Config schema and
   the RPC surface are unchanged from v0.6.9.

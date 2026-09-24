@@ -15,7 +15,7 @@ Sign in to your Cursor account and use your Cursor subscription directly from De
 - View sign-in status and token expiration in the settings page, which labels itself with the installed build version.
 - View and manually refresh subscription usage as Cursor's own dashboard lays it out: an included-usage table with the Cursor Models and Other Models pools, each followed by the models that drew on it, with token counts and percentages per row, plus included requests, on-demand spend, and the billing cycle.
 - View and manually refresh the models available to the current account, listed by name instead of Cursor's response order.
-- Configure the per-run tool-round limit and HTTP retry count, interval, and status codes from the settings page.
+- Configure the per-run tool-round limit, the HTTP retry policy, and whether every step replays the full history from the settings page.
 - Read the settings page in Simplified Chinese, English, Traditional Chinese, Japanese, Korean, Spanish, French, German, Italian, Brazilian Portuguese, Russian, or Arabic. The panel mirrors itself for Arabic; contributed languages join DSH's own language picker under **Settings → General → Language** and fall back to English outside the panel.
 
 ## Installation
@@ -60,7 +60,7 @@ Then add `dsh-cursor-subscription` to the `dsh.profile.bundles` array in `packag
 
 When a tool is required, the agent converts Cursor's tool request into a local DSH tool execution. The result is returned to the model through the conversation history; Cursor's filesystem tools are not used. When Cursor asks for one of its own built-in tools instead — including a tool newer than this build knows — the plugin declines that request right away, telling the model to use the DSH tools, so the run continues instead of waiting for a result that will never come.
 
-The **Runtime settings** card controls the maximum tool rounds in one Cursor run and the HTTP retry policy. The tool-round cap defaults to `200` (range 1–1000) and ends the run with `TOOL_LIMIT` when exceeded. Retry count means additional attempts and defaults to `0` (disabled). Cursor's streaming POST protocol cannot prove that a failed attempt was not processed remotely, so enabling retries may repeat model work or usage. Retries occur only before any response output when the initial HTTP status matches the configured list.
+The **Runtime settings** card controls the maximum tool rounds in one Cursor run, the HTTP retry policy, and whether each step replays the full history. The tool-round cap defaults to `200` (range 1–1000) and ends the run with `TOOL_LIMIT` when exceeded. Retry count means additional attempts and defaults to `0` (disabled). Cursor's streaming POST protocol cannot prove that a failed attempt was not processed remotely, so enabling retries may repeat model work or usage. Retries occur only before any response output when the initial HTTP status matches the configured list. **Replay the full history each step** is off by default: it rebuilds the Cursor conversation from the DSH history on every step instead of resuming the conversation Cursor keeps server-side, which is what an adapter that re-sends its own history does — at the cost of re-sending the transcript each step, since Cursor has no provider-side compaction to bound it.
 
 ## Updating and Removing
 
