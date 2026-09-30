@@ -79,9 +79,12 @@ function strictContext(declared, services, label = "context") {
  * `rpc` registry; `providerDeclaresWebServer: true` models a build whose own
  * provider scope declares `webServer` (0.1.0-rc.6). `withConfigure: false`
  * models a settings service from before 0.1.7, which had `installSection`
- * instead of `configure`.
+ * instead of `configure`. `routeOptions: false` models the 0.2.0-rc.2 line,
+ * where `register(owner, channel, handler)` and `handle(channel, handler)`
+ * dropped the trailing route-options parameter, so its declared arity no longer
+ * advertises a per-route loopback pin.
  */
-function host({ withWebServer = true, withRegister = true, providerDeclaresWebServer = false, withConfigure = true } = {}) {
+function host({ withWebServer = true, withRegister = true, providerDeclaresWebServer = false, withConfigure = true, routeOptions = true } = {}) {
 	const routes = [];
 	const adapters = [];
 	const channelCalls = { register: [], handle: [] };
@@ -123,22 +126,42 @@ function host({ withWebServer = true, withRegister = true, providerDeclaresWebSe
 
 	/** The real registration body: the owner Context must resolve `webServer`. */
 	const registerRoute = (owner, channel, options) =>
-		owner.effect(() => owner.webServer.register({ kind: "prefix", path: channel, options }), `rpc ${channel}`);
+		owner.effect(
+			() => owner.webServer.register(
+				options === undefined
+					? { kind: "prefix", path: channel }
+					: { kind: "prefix", path: channel, options },
+			),
+			`rpc ${channel}`,
+		);
 
 	services.connection = {
 		rpc: {
 			// Mirrors `rpc.handle`: it registers on the providing plugin's scope.
-			handle: (channel, handler, options) => {
-				channelCalls.handle.push({ channel, handler, options });
-				return registerRoute(strictContext(providerScope, services, "client-connection"), channel, options);
-			},
+			// 0.1.x declares a trailing `options`; 0.2.0-rc.2 declares two
+			// parameters, which is what the plugin reads to decide whether a
+			// per-route loopback pin still exists.
+			handle: routeOptions
+				? (channel, handler, options) => {
+					channelCalls.handle.push({ channel, handler, options });
+					return registerRoute(strictContext(providerScope, services, "client-connection"), channel, options);
+				}
+				: (channel, handler) => {
+					channelCalls.handle.push({ channel, handler });
+					return registerRoute(strictContext(providerScope, services, "client-connection"), channel);
+				},
 		},
 	};
 	if (withRegister) {
-		services.connection.register = (owner, channel, handler, options) => {
-			channelCalls.register.push({ owner, channel, handler, options });
-			return registerRoute(owner, channel, options);
-		};
+		services.connection.register = routeOptions
+			? (owner, channel, handler, options) => {
+				channelCalls.register.push({ owner, channel, handler, options });
+				return registerRoute(owner, channel, options);
+			}
+			: (owner, channel, handler) => {
+				channelCalls.register.push({ owner, channel, handler });
+				return registerRoute(owner, channel);
+			};
 	}
 	if (withWebServer) {
 		services.webServer = {
@@ -197,7 +220,10 @@ test("apply survives a settings service that predates configure", () => {
 	assert.equal(adapters.length, 1, "the Cursor LLM adapter still registers");
 });
 
-test("apply mounts the loopback account channel through a webServer-declaring owner", () => {
+test("apply pins the loopback fence on a Connection that still takes route options", () => {
+	// The 0.1.x line: `register(owner, channel, handler, options)` with
+	// `{ authority: "loopback" }` kept this channel loopback-only even on a
+	// deployment that serves other channels from `trustedHosts`.
 	const { ctx, routes, adapters, channelCalls } = host();
 
 	apply(ctx, {});
@@ -213,6 +239,38 @@ test("apply mounts the loopback account channel through a webServer-declaring ow
 	assert.equal(channelCalls.handle.length, 0, "the provider-scoped rpc.handle path cannot resolve webServer");
 	assert.equal(channelCalls.register.length, 1, "the channel must be registered exactly once");
 	assert.equal(adapters.length, 1, "the Cursor LLM adapter still registers");
+});
+
+test("apply omits route options on a Connection that dropped the parameter", () => {
+	// 0.2.0-rc.2 declares `register(owner, channel, handler)` and
+	// `handle(channel, handler)`. The service fences every registered channel
+	// through one trusted-authority + browser-authentication check, so no
+	// per-route loopback pin is left to state and a fourth argument would be
+	// ignored rather than honoured.
+	const { ctx, routes, adapters, channelCalls } = host({ routeOptions: false });
+
+	apply(ctx, {});
+
+	const route = routes.find((entry) => entry.path === CHANNEL);
+	assert.ok(route, `expected a web server route for ${CHANNEL}, got ${JSON.stringify(routes)}`);
+	assert.equal(route.kind, "prefix");
+	assert.equal(route.options, undefined, "0.2.0-rc.2 has no per-route options to restate");
+	assert.equal(channelCalls.register.length, 1, "the channel must be registered exactly once");
+	assert.equal(channelCalls.register[0].options, undefined, "the ignored argument must not be passed");
+	assert.equal(channelCalls.handle.length, 0, "the provider-scoped rpc.handle path cannot resolve webServer");
+	assert.equal(adapters.length, 1, "the Cursor LLM adapter still registers");
+});
+
+test("the rpc.handle fallback follows the declared arity too", () => {
+	const { ctx, routes, channelCalls } = host({ withRegister: false, providerDeclaresWebServer: true, routeOptions: false });
+
+	apply(ctx, {});
+
+	assert.equal(channelCalls.handle.length, 1, "the public rpc.handle must be used when register is absent");
+	assert.equal(channelCalls.handle[0].options, undefined, "the ignored argument must not be passed");
+	const route = routes.find((entry) => entry.path === CHANNEL);
+	assert.ok(route, `expected a web server route for ${CHANNEL}, got ${JSON.stringify(routes)}`);
+	assert.equal(route.options, undefined);
 });
 
 test("apply still loads when the profile has no web server", () => {

@@ -100,6 +100,14 @@ dsh plugin --profile web remove dsh-cursor-subscription   # 卸载
 - **DSH 启动失败并报 `cannot get property "webServer" without inject`**：当前 DSH 的
   Connection 插件不再自己声明 `webServer`，旧版插件注册账户通道时依赖了它。请安装
   0.5.8 或更高版本的本插件。
+- **DSH 启动失败并报 `Plugin dsh-cursor-subscription@... is incompatible with dsh ...`，
+  或提示 `patch: entry "cursor-subscription" not found`**：从 DSH 0.2.0-rc.2 起，若插件
+  声明的 DSH peer 范围不覆盖当前 DSH 版本，profile 会拒绝加载该插件；被拒绝的插件不会
+  贡献 `cursor-subscription` 条目，于是 profile 自己的补丁会报告该条目不存在。0.6.12
+  及更高版本声明的是 0.2.0-rc 线，0.6.11 及更低版本只声明 0.1.x 线。请安装与当前 DSH
+  匹配的版本；若确认风险，也可用
+  `dsh plugin --profile web allow-version dsh-cursor-subscription@<版本> --dsh-version <DSH版本> --accept-risk`
+  对某一对具体版本显式放行。
 - **普通安装装到的是旧版本**：pnpm 内置的 24 小时 `minimumReleaseAge` 防护会跳过
   最近一天内发布的版本。请显式指定版本安装，或按包名豁免该包；见安装章节。
 - **服务端协议变更**：Cursor 的 Agent 协议是未公开接口，若请求失败请检查插件更新。

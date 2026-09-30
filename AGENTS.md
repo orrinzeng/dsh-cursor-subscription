@@ -112,6 +112,23 @@ plugin-load failure.
   Install a build adapted to that API; do not switch profiles or pin DSH blind,
   because the same release also decides which `@deepseek-ai/*` packages a
   profile plugin resolves at runtime.
+- A boot failure reading `dsh: warning: Plugin dsh-cursor-subscription@<version>
+  is incompatible with dsh <dsh-version>: peerDependencies {...}` followed by
+  `dsh: [...] patch: entry "cursor-subscription" not found` means DSH's
+  version-compatibility gate denied the plugin, so its bundle layer never
+  contributed the `cursor-subscription` row the profile patch targets. Since
+  DSH 0.2.0-rc.2 a profile checks every plugin's `@deepseek-ai/dsh` and
+  `@deepseek-ai/dsh-*` `peerDependencies` range against the runtime version
+  (`semver.satisfies(runtime, range, { includePrerelease: true })`) before
+  importing it; one unsatisfied range denies the whole plugin, and the denial
+  also removes its rows from the composition. `@deepseek-ai/cordis` and
+  `react` are not DSH peers and are never checked. Install a build whose
+  declared ranges cover the running DSH, or, to accept the risk for one exact
+  `name@version` / DSH version pair, grant an exemption with
+  `dsh plugin --profile web allow-version dsh-cursor-subscription@<version>
+  --dsh-version <dsh-version> --accept-risk`. The 0.1.x line is not covered by
+  version 0.6.12 or later, and 0.2.0-rc.2 is not covered by 0.6.11 or earlier:
+  a stale peer range reads as a load failure, not as a missing feature.
 - A boot failure reading `... .volatile is not a function` while importing the
   plugin means `@deepseek-ai/schemastery` resolved to a pre-3.18.3 copy, which
   has no `volatile()`. That library is a runtime dependency of this plugin, so a
